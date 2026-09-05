@@ -118,7 +118,7 @@ private struct QQBindingView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                Image(systemName: "qrcode").font(.system(size: 64)).foregroundStyle(.accent)
+                Image(systemName: "qrcode").font(.system(size: 64)).foregroundStyle(Color.accentColor)
                 Text("在浏览器完成 QQ 授权后返回本 App，绑定状态会自动刷新。")
                     .multilineTextAlignment(.center).foregroundStyle(.secondary)
                 Button("打开 QQ 授权页面") { start() }.buttonStyle(.borderedProminent).disabled(polling)
