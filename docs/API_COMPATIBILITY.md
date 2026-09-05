@@ -21,6 +21,12 @@
 - 内容：`/announcements`、`/notifications`、`/notifications/unread`、`/notifications/read`、`/suggestions`、`/memorials`。
 - 更新：`/update/latest`、`/update/pack-links`、`/mods/list`、`:5551/mods/mods.json`。
 
+## 已核验的响应结构
+
+- `GET /forum/posts?page=1`：返回对象中的 `posts` 数组；帖子的正文为 `content`，作者显示名为 `nickname`。
+- `GET /forum/post/{id}`：返回 `data.post` 与 `data.replies`；回复正文为 `replies[*].content`，不能将外层对象直接作为普通列表项。
+- 资料与排行榜中的 `avatar` 可以是文件名；客户端将其解析为 `https://login.lanternwaves.fun/user/avatar/{filename}`。
+
 ## 验证约束
 
 旧程序经过裁剪，字段模型不能仅靠字符串完整恢复。客户端因此先用容错 JSON envelope 解码；获得低权限测试账号后，必须逐接口记录方法、请求字段、响应样例和错误码，再把已验证的关键响应收紧为具体模型。任何会修改服务器状态的验证只能使用测试数据。App 内的“网络日志”只记录时间、方法、地址与状态码，绝不记录请求正文、密码或令牌。

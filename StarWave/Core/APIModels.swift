@@ -103,7 +103,7 @@ struct UserProfile: Equatable {
         role = source["role"]?.stringValue ?? "user"
         balance = source["balance"]?.stringValue ?? source["coins"]?.stringValue ?? "0"
         qqNickname = source["qq_nickname"]?.stringValue
-        avatarURL = (source["avatar"]?.stringValue ?? source["avatar_url"]?.stringValue).flatMap(URL.init(string:))
+        avatarURL = AppEnvironment.avatarURL(from: source["avatar"]?.stringValue ?? source["avatar_url"]?.stringValue)
     }
 
     var isAdministrator: Bool { role == "admin" || role == "super_admin" }
@@ -121,12 +121,17 @@ struct RemoteItem: Identifiable, Hashable {
         id = json["id"]?.stringValue ?? json["post_id"]?.stringValue ?? json["task_id"]?.stringValue ?? "row-\(index)"
         title = json["title"]?.stringValue
             ?? json["name"]?.stringValue
+            ?? json["nickname"]?.stringValue
+            ?? json["player_name"]?.stringValue
             ?? json["username"]?.stringValue
             ?? json["content"]?.stringValue
             ?? "项目 \(index + 1)"
         subtitle = json["description"]?.stringValue
             ?? json["summary"]?.stringValue
+            ?? json["nickname"]?.stringValue
+            ?? json["player_name"]?.stringValue
             ?? json["author"]?.stringValue
+            ?? json["created_at"]?.stringValue
             ?? json["status"]?.stringValue
             ?? ""
         detail = json["content"]?.stringValue
@@ -136,19 +141,33 @@ struct RemoteItem: Identifiable, Hashable {
     }
 
     static func list(from value: JSONValue) -> [RemoteItem] {
-        let payload = value.unwrappedPayload
-        if case let .array(items) = payload {
-            return items.enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
+        items(in: value).enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
+    }
+
+    private static func items(in value: JSONValue) -> [JSONValue] {
+        if case let .array(items) = value { return items }
+        guard case let .object(object) = value else { return [] }
+        for key in ["data", "result", "items", "list", "posts", "tasks", "notifications", "polls", "seasons", "records", "rows", "rewards", "players", "rankings", "titles"] {
+            if let nested = object[key], !items(in: nested).isEmpty { return items(in: nested) }
         }
-        if case let .object(object) = payload {
-            for key in ["items", "list", "posts", "tasks", "notifications", "polls", "seasons"] {
-                if case let .array(items)? = object[key] {
-                    return items.enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
-                }
-            }
-            return [RemoteItem(json: payload, index: 0)]
+        // A single real item is still useful; error envelopes are intentionally not shown as “项目 1”.
+        if object["id"] != nil || object["title"] != nil || object["name"] != nil || object["username"] != nil || object["player_name"] != nil {
+            return [value]
         }
         return []
+    }
+}
+
+struct ForumPostDetail: Equatable {
+    let post: RemoteItem
+    let replies: [RemoteItem]
+
+    init?(json: JSONValue) {
+        let source = json["data"] ?? json
+        guard let postValue = source["post"] else { return nil }
+        post = RemoteItem(json: postValue, index: 0)
+        let replyValues = source["replies"]?.arrayValue ?? []
+        replies = replyValues.enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
     }
 }
 
@@ -168,4 +187,3 @@ struct GitHubRelease: Decodable, Equatable {
         case htmlURL = "html_url"
     }
 }
-

@@ -9,6 +9,14 @@ enum AppEnvironment {
     static let releasesURL = URL(string: "https://api.github.com/repos/Ccat-Q/XDYL-Updater2-IOS/releases/latest")!
     static let repositoryReleasesURL = URL(string: "https://github.com/Ccat-Q/XDYL-Updater2-IOS/releases")!
 
+    static func avatarURL(from value: String?) -> URL? {
+        guard let value, !value.isEmpty else { return nil }
+        if let url = URL(string: value), url.scheme != nil { return url }
+        return webBaseURL
+            .appendingPathComponent("user/avatar")
+            .appendingPathComponent(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+    }
+
     static func permitsDownload(from url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
         if scheme == "https" { return true }

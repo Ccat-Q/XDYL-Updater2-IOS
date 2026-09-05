@@ -91,6 +91,9 @@ struct RemoteItemRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(item.title).font(.subheadline.weight(.semibold))
             if !item.subtitle.isEmpty { Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
+            if !item.detail.isEmpty, item.detail != item.title, item.detail != item.subtitle {
+                Text(item.detail).font(.subheadline).foregroundStyle(.primary).lineLimit(4)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

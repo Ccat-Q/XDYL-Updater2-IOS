@@ -272,7 +272,10 @@ struct RemoteStandaloneList: View {
     var body: some View {
         Group {
             if loading && items.isEmpty { ProgressView() }
-            else if items.isEmpty { EmptyStateView(icon: icon, title: "暂无\(title)", message: "下拉刷新") }
+            else if items.isEmpty {
+                ScrollView { EmptyStateView(icon: icon, title: "暂无\(title)", message: "下拉刷新") }
+                    .refreshable { await load() }
+            }
             else { List(items) { RemoteItemRow(item: $0) }.refreshable { await load() } }
         }
         .navigationTitle(title)

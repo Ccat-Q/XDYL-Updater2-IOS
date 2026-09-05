@@ -13,7 +13,8 @@ struct CommunityView: View {
             if isLoading && posts.isEmpty {
                 ProgressView()
             } else if posts.isEmpty {
-                EmptyStateView(icon: "bubble.left", title: "暂无帖子", message: "下拉刷新，或发布第一条内容。")
+                ScrollView { EmptyStateView(icon: "bubble.left", title: "暂无帖子", message: "下拉刷新，或发布第一条内容。") }
+                    .refreshable { await load() }
             } else {
                 List(posts) { post in
                     NavigationLink(value: post) {
@@ -118,20 +119,20 @@ private struct ComposePostView: View {
 private struct ForumPostView: View {
     @EnvironmentObject private var model: AppModel
     let post: RemoteItem
-    @State private var detail: RemoteItem?
+    @State private var detail: ForumPostDetail?
     @State private var reply = ""
     @State private var isLoading = false
 
     var body: some View {
         List {
             Section {
-                Text(detail?.title ?? post.title).font(.title3.bold())
-                Text(detail?.detail ?? post.detail)
+                Text(detail?.post.title ?? post.title).font(.title3.bold())
+                Text(detail?.post.detail ?? post.detail)
             }
-            if let replies = detail?.raw["replies"]?.arrayValue, !replies.isEmpty {
+            if let replies = detail?.replies, !replies.isEmpty {
                 Section("回复") {
-                    ForEach(Array(replies.enumerated()), id: \.offset) { pair in
-                        RemoteItemRow(item: RemoteItem(json: pair.element, index: pair.offset))
+                    ForEach(replies) { reply in
+                        RemoteItemRow(item: reply)
                     }
                 }
             }
@@ -153,7 +154,11 @@ private struct ForumPostView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        do { detail = try await model.api.values(path: "/forum/post/\(post.id)").first }
+        do {
+            let value = try await model.api.value(path: "/forum/post/\(post.id)")
+            guard let parsed = ForumPostDetail(json: value) else { throw AppError.decoding("帖子详情缺少正文") }
+            detail = parsed
+        }
         catch { model.errorMessage = error.localizedDescription }
     }
 

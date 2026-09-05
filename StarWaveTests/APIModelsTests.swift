@@ -28,6 +28,22 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(profile.balance, "12")
     }
 
+    func testForumDetailKeepsPostAndReplyBodies() throws {
+        let data = Data(#"{"data":{"post":{"id":2,"title":"帖子","content":"正文"},"replies":[{"id":3,"nickname":"回复者","content":"回复正文"}]}}"#.utf8)
+        let value = try JSONDecoder().decode(JSONValue.self, from: data)
+        let detail = try XCTUnwrap(ForumPostDetail(json: value))
+        XCTAssertEqual(detail.post.title, "帖子")
+        XCTAssertEqual(detail.post.detail, "正文")
+        XCTAssertEqual(detail.replies.first?.title, "回复者")
+        XCTAssertEqual(detail.replies.first?.detail, "回复正文")
+    }
+
+    func testRelativeAvatarUsesIdentityHost() throws {
+        let data = Data(#"{"username":"cat","avatar":"avatar_1.jpg"}"#.utf8)
+        let profile = UserProfile(json: try JSONDecoder().decode(JSONValue.self, from: data))
+        XCTAssertEqual(profile.avatarURL?.absoluteString, "https://login.lanternwaves.fun/user/avatar/avatar_1.jpg")
+    }
+
     func testKnownFeatureRoutesAreUnique() {
         XCTAssertEqual(Set(AppEnvironment.apiRoutes.map(\.id)).count, AppEnvironment.apiRoutes.count)
     }
@@ -39,4 +55,3 @@ final class APIModelsTests: XCTestCase {
         XCTAssertFalse(AppEnvironment.permitsDownload(from: URL(string: "http://other.example/file.zip")!))
     }
 }
-

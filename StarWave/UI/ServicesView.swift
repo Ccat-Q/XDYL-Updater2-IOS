@@ -25,11 +25,14 @@ private struct RemoteFeatureView: View {
     var body: some View {
         Group {
             if isLoading && items.isEmpty { ProgressView() }
-            else if items.isEmpty { EmptyStateView(icon: route.icon, title: "暂无\(route.title)", message: "下拉刷新后仍为空时，请确认旧服务接口是否可用。") }
+            else if items.isEmpty {
+                ScrollView { EmptyStateView(icon: route.icon, title: "暂无\(route.title)", message: "下拉刷新以重试请求。") }
+                    .refreshable { await load() }
+            }
             else {
                 List(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        RemoteItemRow(item: item)
+                        NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
                         actionButtons(for: item)
                     }
                     .padding(.vertical, 4)
@@ -116,5 +119,29 @@ private struct RemoteFeatureView: View {
                 await load()
             } catch { model.errorMessage = error.localizedDescription }
         }
+    }
+}
+
+private struct RemoteItemDetailView: View {
+    let title: String
+    let item: RemoteItem
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(item.title).font(.title3.bold())
+                if !item.subtitle.isEmpty { Text(item.subtitle).foregroundStyle(.secondary) }
+                if !item.detail.isEmpty, item.detail != item.subtitle { Text(item.detail) }
+                ForEach(item.raw.objectValue.keys.sorted(), id: \.self) { key in
+                    if let value = item.raw[key]?.stringValue, !["title", "name", "content", "description", "summary"].contains(key) {
+                        LabeledContent(key, value: value).font(.footnote)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
