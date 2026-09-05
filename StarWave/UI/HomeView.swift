@@ -14,11 +14,15 @@ struct HomeView: View {
                 welcomeCard
                 SectionCard(title: "服务器状态", icon: "dot.radiowaves.left.and.right") {
                     if serverStatus.isEmpty { Text("暂无状态数据").foregroundStyle(.secondary) }
-                    ForEach(serverStatus) { item in RemoteItemRow(item: item) }
+                    ForEach(serverStatus) { item in
+                        NavigationLink { RemoteItemDetailView(title: "服务器状态", item: item) } label: { RemoteItemRow(item: item) }
+                    }
                 }
                 SectionCard(title: "公告", icon: "megaphone") {
                     if announcements.isEmpty { Text("暂无公告").foregroundStyle(.secondary) }
-                    ForEach(announcements) { item in RemoteItemRow(item: item) }
+                    ForEach(announcements) { item in
+                        NavigationLink { RemoteItemDetailView(title: "公告", item: item) } label: { RemoteItemRow(item: item) }
+                    }
                 }
                 if let release { releaseCard(release) }
             }
@@ -96,5 +100,29 @@ struct RemoteItemRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct RemoteItemDetailView: View {
+    let title: String
+    let item: RemoteItem
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(item.title).font(.title3.bold())
+                if !item.subtitle.isEmpty { Text(item.subtitle).foregroundStyle(.secondary) }
+                if !item.detail.isEmpty, item.detail != item.subtitle { Text(item.detail) }
+                ForEach(item.raw.objectValue.keys.sorted(), id: \.self) { key in
+                    if let value = item.raw[key]?.stringValue, !["title", "name", "content", "description", "summary"].contains(key) {
+                        LabeledContent(key, value: value).font(.footnote)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

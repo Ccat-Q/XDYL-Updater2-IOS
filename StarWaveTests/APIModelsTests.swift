@@ -44,6 +44,15 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(profile.avatarURL?.absoluteString, "https://login.lanternwaves.fun/user/avatar/avatar_1.jpg")
     }
 
+    func testRemoteItemsFindFeatureSpecificNestedArray() throws {
+        let data = Data(#"{"data":{"daily_rewards":[{"reward_id":8,"reward_name":"奖励","description":"说明"}]}}"#.utf8)
+        let value = try JSONDecoder().decode(JSONValue.self, from: data)
+        let items = RemoteItem.list(from: value)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.id, "8")
+        XCTAssertEqual(items.first?.title, "奖励")
+    }
+
     func testKnownFeatureRoutesAreUnique() {
         XCTAssertEqual(Set(AppEnvironment.apiRoutes.map(\.id)).count, AppEnvironment.apiRoutes.count)
     }

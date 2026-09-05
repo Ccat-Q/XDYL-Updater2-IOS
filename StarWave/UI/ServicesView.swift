@@ -121,27 +121,3 @@ private struct RemoteFeatureView: View {
         }
     }
 }
-
-private struct RemoteItemDetailView: View {
-    let title: String
-    let item: RemoteItem
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(item.title).font(.title3.bold())
-                if !item.subtitle.isEmpty { Text(item.subtitle).foregroundStyle(.secondary) }
-                if !item.detail.isEmpty, item.detail != item.subtitle { Text(item.detail) }
-                ForEach(item.raw.objectValue.keys.sorted(), id: \.self) { key in
-                    if let value = item.raw[key]?.stringValue, !["title", "name", "content", "description", "summary"].contains(key) {
-                        LabeledContent(key, value: value).font(.footnote)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-        }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}

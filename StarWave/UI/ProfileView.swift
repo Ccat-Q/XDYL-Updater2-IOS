@@ -276,7 +276,12 @@ struct RemoteStandaloneList: View {
                 ScrollView { EmptyStateView(icon: icon, title: "暂无\(title)", message: "下拉刷新") }
                     .refreshable { await load() }
             }
-            else { List(items) { RemoteItemRow(item: $0) }.refreshable { await load() } }
+            else {
+                List(items) { item in
+                    NavigationLink { RemoteItemDetailView(title: title, item: item) } label: { RemoteItemRow(item: item) }
+                }
+                .refreshable { await load() }
+            }
         }
         .navigationTitle(title)
         .task { await load() }

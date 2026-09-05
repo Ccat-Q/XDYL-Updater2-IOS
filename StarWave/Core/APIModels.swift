@@ -118,11 +118,24 @@ struct RemoteItem: Identifiable, Hashable {
 
     init(json: JSONValue, index: Int) {
         raw = json
-        id = json["id"]?.stringValue ?? json["post_id"]?.stringValue ?? json["task_id"]?.stringValue ?? "row-\(index)"
+        id = json["id"]?.stringValue
+            ?? json["post_id"]?.stringValue
+            ?? json["task_id"]?.stringValue
+            ?? json["item_id"]?.stringValue
+            ?? json["reward_id"]?.stringValue
+            ?? json["title_id"]?.stringValue
+            ?? json["season_id"]?.stringValue
+            ?? json["user_id"]?.stringValue
+            ?? "row-\(index)"
         title = json["title"]?.stringValue
             ?? json["name"]?.stringValue
             ?? json["nickname"]?.stringValue
             ?? json["player_name"]?.stringValue
+            ?? json["item_name"]?.stringValue
+            ?? json["reward_name"]?.stringValue
+            ?? json["season_name"]?.stringValue
+            ?? json["label"]?.stringValue
+            ?? json["type"]?.stringValue
             ?? json["username"]?.stringValue
             ?? json["content"]?.stringValue
             ?? "项目 \(index + 1)"
@@ -130,6 +143,9 @@ struct RemoteItem: Identifiable, Hashable {
             ?? json["summary"]?.stringValue
             ?? json["nickname"]?.stringValue
             ?? json["player_name"]?.stringValue
+            ?? json["message"]?.stringValue
+            ?? json["progress"]?.stringValue
+            ?? json["rank"]?.stringValue
             ?? json["author"]?.stringValue
             ?? json["created_at"]?.stringValue
             ?? json["status"]?.stringValue
@@ -150,8 +166,16 @@ struct RemoteItem: Identifiable, Hashable {
         for key in ["data", "result", "items", "list", "posts", "tasks", "notifications", "polls", "seasons", "records", "rows", "rewards", "players", "rankings", "titles"] {
             if let nested = object[key], !items(in: nested).isEmpty { return items(in: nested) }
         }
+        // The service has several feature-specific container keys. Prefer any
+        // populated array before falling back to a single object.
+        for nested in object.values {
+            if case .array = nested, !items(in: nested).isEmpty { return items(in: nested) }
+        }
+        for nested in object.values {
+            if case .object = nested, !items(in: nested).isEmpty { return items(in: nested) }
+        }
         // A single real item is still useful; error envelopes are intentionally not shown as “项目 1”.
-        if object["id"] != nil || object["title"] != nil || object["name"] != nil || object["username"] != nil || object["player_name"] != nil {
+        if object["id"] != nil || object["title"] != nil || object["name"] != nil || object["username"] != nil || object["player_name"] != nil || object["item_name"] != nil || object["reward_name"] != nil {
             return [value]
         }
         return []
