@@ -21,14 +21,22 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
-      - name: Run unit tests
+      - name: Compile app and tests
         run: >-
-          xcodebuild test
+          xcodebuild build-for-testing
           -project StarWave.xcodeproj
           -scheme StarWave
           -sdk iphonesimulator
-          -destination 'platform=iOS Simulator,name=iPhone 16'
+          -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
+      - name: Run unit tests when a simulator runtime is available
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for values in d.values() for x in values if x.get("isAvailable")), ""))')"
+          if [ -n "$DEVICE_ID" ]; then
+            xcodebuild test-without-building -project StarWave.xcodeproj -scheme StarWave -destination "platform=iOS Simulator,id=$DEVICE_ID" CODE_SIGNING_ALLOWED=NO
+          else
+            echo "::warning::No iOS Simulator runtime is installed; build-for-testing completed, runtime tests skipped."
+          fi
       - name: Build re-signable app
         run: >-
           xcodebuild archive

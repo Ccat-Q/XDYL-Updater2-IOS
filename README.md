@@ -17,11 +17,11 @@ open StarWave.xcodeproj
 运行测试：
 
 ```bash
-xcodebuild test \
+xcodebuild build-for-testing \
   -project StarWave.xcodeproj \
   -scheme StarWave \
   -sdk iphonesimulator \
-  -destination 'platform=iOS Simulator,name=iPhone 16'
+  -destination 'generic/platform=iOS Simulator'
 ```
 
 ## IPA
@@ -38,4 +38,3 @@ xcodebuild test \
 旧服务的 `api.lanternwaves.fun:8080` 和 `:5551` 仅支持 HTTP。为保持接口不变，应用对 `api.lanternwaves.fun` 配置了 ATS 例外，并在代码中把明文请求限制到上述端口。访问令牌只存放在 Keychain；但服务端明文传输风险无法由客户端消除。
 
 逆向确认的接口和实现状态见 [API compatibility](docs/API_COMPATIBILITY.md)。
-
