@@ -133,6 +133,9 @@ struct RemoteItem: Identifiable, Hashable {
             ?? json["player_name"]?.stringValue
             ?? json["item_name"]?.stringValue
             ?? json["reward_name"]?.stringValue
+            ?? json["hours"].map { "\($0.stringValue ?? "") 小时奖励" }
+            ?? json["required_hours"].map { "\($0.stringValue ?? "") 小时奖励" }
+            ?? json["required_seconds"].map { "累计 \($0.stringValue ?? "") 秒奖励" }
             ?? json["season_name"]?.stringValue
             ?? json["label"]?.stringValue
             ?? json["type"]?.stringValue
@@ -146,6 +149,8 @@ struct RemoteItem: Identifiable, Hashable {
             ?? json["message"]?.stringValue
             ?? json["progress"]?.stringValue
             ?? json["rank"]?.stringValue
+            ?? json["coins"].map { "\($0.stringValue ?? "") 喵币" }
+            ?? json["reward_coins"].map { "奖励 \($0.stringValue ?? "") 喵币" }
             ?? json["author"]?.stringValue
             ?? json["created_at"]?.stringValue
             ?? json["status"]?.stringValue

@@ -21,6 +21,7 @@ private struct RemoteFeatureView: View {
     @State private var showingCompose = false
     @State private var composeText = ""
     @State private var showingFileImporter = false
+    @State private var showingCustomTitle = false
 
     var body: some View {
         Group {
@@ -32,7 +33,11 @@ private struct RemoteFeatureView: View {
             else {
                 List(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
+                        if route.path == "/rank/coins" || route.path == "/rank/playtime" {
+                            RankRow(item: item, metric: route.path == "/rank/coins" ? .coins : .playtime)
+                        } else {
+                            NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
+                        }
                         actionButtons(for: item)
                     }
                     .padding(.vertical, 4)
@@ -46,6 +51,8 @@ private struct RemoteFeatureView: View {
                 Button { showingCompose = true } label: { Image(systemName: "square.and.pencil") }
             } else if route.title == "YSM 皮肤" {
                 Button { showingFileImporter = true } label: { Image(systemName: "square.and.arrow.up") }
+            } else if route.title == "称号目录" {
+                Button { showingCustomTitle = true } label: { Image(systemName: "plus.rectangle.on.rectangle") }
             }
         }
         .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.data]) { result in
@@ -62,6 +69,7 @@ private struct RemoteFeatureView: View {
                     }
             }
         }
+        .sheet(isPresented: $showingCustomTitle) { CustomTitlePurchaseView { await load() } }
         .task { await load() }
     }
 
@@ -117,6 +125,75 @@ private struct RemoteFeatureView: View {
                 let data = try Data(contentsOf: url)
                 _ = try await model.api.upload(path: "/upload_v2", data: data, filename: url.lastPathComponent, fieldName: "skin_file")
                 await load()
+            } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct RankRow: View {
+    enum Metric { case coins, playtime }
+    let item: RemoteItem
+    let metric: Metric
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("#\(item.raw["rank"]?.stringValue ?? "-")").font(.title3.bold()).foregroundStyle(.secondary).frame(width: 38)
+            AsyncImage(url: AppEnvironment.avatarURL(from: item.raw["avatar"]?.stringValue)) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "person.crop.circle.fill").foregroundStyle(.secondary) }
+                .frame(width: 38, height: 38).clipShape(Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.subheadline.weight(.semibold))
+                if let username = item.raw["username"]?.stringValue, username != item.title { Text("@\(username)").font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            Text(metricValue).font(.subheadline.weight(.semibold)).multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var metricValue: String {
+        switch metric {
+        case .coins: return "\(item.raw["coins"]?.stringValue ?? "0") 喵币"
+        case .playtime:
+            let seconds = Int(item.raw["seconds"]?.stringValue ?? "0") ?? 0
+            return "\(seconds / 3600) 小时 \((seconds % 3600) / 60) 分"
+        }
+    }
+}
+
+private struct CustomTitlePurchaseView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let onComplete: () async -> Void
+    @State private var title = ""
+    @State private var showingConfirmation = false
+    @State private var isSubmitting = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("输入新称号", text: $title)
+                Text("价格和最大长度由服务器校验；提交前会再次确认。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .navigationTitle("自定义称号")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("继续") { showingConfirmation = true }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting) }
+            }
+            .confirmationDialog("确认购买自定义称号？", isPresented: $showingConfirmation, titleVisibility: .visible) {
+                Button("确认提交", role: .destructive) { submit() }
+            } message: { Text("服务器会按实际规则扣除喵币。") }
+        }
+    }
+
+    private func submit() {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSubmitting = true
+        Task {
+            defer { isSubmitting = false }
+            do {
+                _ = try await model.api.post(path: "/titles/buy", fields: ["title": .string(value)])
+                await onComplete()
+                dismiss()
             } catch { model.errorMessage = error.localizedDescription }
         }
     }

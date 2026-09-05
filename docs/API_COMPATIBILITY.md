@@ -26,6 +26,9 @@
 - `GET /forum/posts?page=1`：返回对象中的 `posts` 数组；帖子的正文为 `content`，作者显示名为 `nickname`。
 - `GET /forum/post/{id}`：返回 `data.post` 与 `data.replies`；回复正文为 `replies[*].content`，不能将外层对象直接作为普通列表项。
 - 资料与排行榜中的 `avatar` 可以是文件名；客户端将其解析为 `https://login.lanternwaves.fun/user/avatar/{filename}`。
+- 公告/纪念内容的 `image` 为完整图片地址；帖子与回复的 `content` 可以包含 Markdown 图片 `![说明](URL)`。客户端应同时渲染两者。
+- 排行榜使用 `rank`、`coins` 或 `seconds`；客户端分别显示名次、喵币数和格式化时长。
+- 称号目录包含 `presets`、`custom`、`price_per_char`、`max_len`；自定义称号通过 `POST /titles/buy` 和字段 `title` 提交，必须在客户端二次确认后发出。
 
 ## 验证约束
 
