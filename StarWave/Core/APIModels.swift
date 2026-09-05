@@ -118,47 +118,25 @@ struct RemoteItem: Identifiable, Hashable {
 
     init(json: JSONValue, index: Int) {
         raw = json
-        id = json["id"]?.stringValue
-            ?? json["post_id"]?.stringValue
-            ?? json["task_id"]?.stringValue
-            ?? json["item_id"]?.stringValue
-            ?? json["reward_id"]?.stringValue
-            ?? json["title_id"]?.stringValue
-            ?? json["season_id"]?.stringValue
-            ?? json["user_id"]?.stringValue
-            ?? "row-\(index)"
-        title = json["title"]?.stringValue
-            ?? json["name"]?.stringValue
-            ?? json["nickname"]?.stringValue
-            ?? json["player_name"]?.stringValue
-            ?? json["item_name"]?.stringValue
-            ?? json["reward_name"]?.stringValue
-            ?? json["hours"].map { "\($0.stringValue ?? "") 小时奖励" }
-            ?? json["required_hours"].map { "\($0.stringValue ?? "") 小时奖励" }
-            ?? json["required_seconds"].map { "累计 \($0.stringValue ?? "") 秒奖励" }
-            ?? json["season_name"]?.stringValue
-            ?? json["label"]?.stringValue
-            ?? json["type"]?.stringValue
-            ?? json["username"]?.stringValue
-            ?? json["content"]?.stringValue
+        func first(_ keys: [String]) -> String? { keys.compactMap { json[$0]?.stringValue }.first }
+        id = first(["id", "post_id", "task_id", "item_id", "reward_id", "title_id", "season_id", "user_id"]) ?? "row-\(index)"
+
+        let hours = first(["hours", "required_hours"])
+        let requiredSeconds = first(["required_seconds"])
+        let derivedRewardTitle = hours.map { "\($0) 小时奖励" } ?? requiredSeconds.map { "累计 \($0) 秒奖励" }
+        title = first(["title", "name", "nickname", "player_name", "item_name", "reward_name"])
+            ?? derivedRewardTitle
+            ?? first(["season_name", "label", "type", "username", "content"])
             ?? "项目 \(index + 1)"
-        subtitle = json["description"]?.stringValue
-            ?? json["summary"]?.stringValue
-            ?? json["nickname"]?.stringValue
-            ?? json["player_name"]?.stringValue
-            ?? json["message"]?.stringValue
-            ?? json["progress"]?.stringValue
-            ?? json["rank"]?.stringValue
-            ?? json["coins"].map { "\($0.stringValue ?? "") 喵币" }
-            ?? json["reward_coins"].map { "奖励 \($0.stringValue ?? "") 喵币" }
-            ?? json["author"]?.stringValue
-            ?? json["created_at"]?.stringValue
-            ?? json["status"]?.stringValue
+
+        let coins = first(["coins"])
+        let rewardCoins = first(["reward_coins"])
+        let derivedRewardSubtitle = coins.map { "\($0) 喵币" } ?? rewardCoins.map { "奖励 \($0) 喵币" }
+        subtitle = first(["description", "summary", "nickname", "player_name", "message", "progress", "rank"])
+            ?? derivedRewardSubtitle
+            ?? first(["author", "created_at", "status"])
             ?? ""
-        detail = json["content"]?.stringValue
-            ?? json["note"]?.stringValue
-            ?? json["updated_at"]?.stringValue
-            ?? subtitle
+        detail = first(["content", "note", "updated_at"]) ?? subtitle
     }
 
     static func list(from value: JSONValue) -> [RemoteItem] {

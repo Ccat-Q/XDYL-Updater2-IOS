@@ -29,6 +29,7 @@
 - 公告/纪念内容的 `image` 为完整图片地址；帖子与回复的 `content` 可以包含 Markdown 图片 `![说明](URL)`。客户端应同时渲染两者。
 - 排行榜使用 `rank`、`coins` 或 `seconds`；客户端分别显示名次、喵币数和格式化时长。
 - 称号目录包含 `presets`、`custom`、`price_per_char`、`max_len`；自定义称号通过 `POST /titles/buy` 和字段 `title` 提交，必须在客户端二次确认后发出。
+- 论坛发帖/回复支持通过 `POST /upload/image` 上传图片。iOS 将返回的 `url`、`image_url` 或相对 `path` 插入正文为 Markdown 图片，随后随 `content` 一并提交。
 
 ## 验证约束
 

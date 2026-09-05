@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 struct CommunityView: View {
     @EnvironmentObject private var model: AppModel
@@ -80,6 +81,8 @@ private struct ComposePostView: View {
     @State private var content = ""
     @State private var selectedCategoryID = ""
     @State private var isSending = false
+    @State private var attachment: PhotosPickerItem?
+    @State private var isUploadingImage = false
 
     var body: some View {
         NavigationStack {
@@ -90,6 +93,10 @@ private struct ComposePostView: View {
                 }
                 TextField("标题", text: $title)
                 TextEditor(text: $content).frame(minHeight: 180)
+                PhotosPicker(selection: $attachment, matching: .images) {
+                    Label(isUploadingImage ? "正在上传图片…" : "添加图片", systemImage: "photo.badge.plus")
+                }
+                .disabled(isUploadingImage)
             }
             .navigationTitle("发布帖子")
             .toolbar {
@@ -99,6 +106,7 @@ private struct ComposePostView: View {
                 }
             }
         }
+        .onChange(of: attachment) { item in uploadImage(item) }
     }
 
     private func submit() {
@@ -114,6 +122,20 @@ private struct ComposePostView: View {
             } catch { model.errorMessage = error.localizedDescription }
         }
     }
+
+    private func uploadImage(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        isUploadingImage = true
+        Task {
+            defer { isUploadingImage = false; attachment = nil }
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
+                let response = try await model.api.upload(path: "/upload/image", data: data, filename: "post-image.jpg")
+                guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
+                content += "\n![图片](\(url.absoluteString))\n"
+            } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
 }
 
 private struct ForumPostView: View {
@@ -122,6 +144,8 @@ private struct ForumPostView: View {
     @State private var detail: ForumPostDetail?
     @State private var reply = ""
     @State private var isLoading = false
+    @State private var replyAttachment: PhotosPickerItem?
+    @State private var isUploadingReplyImage = false
 
     var body: some View {
         List {
@@ -138,6 +162,10 @@ private struct ForumPostView: View {
             }
             Section("回复帖子") {
                 TextField("写下回复…", text: $reply, axis: .vertical)
+                PhotosPicker(selection: $replyAttachment, matching: .images) {
+                    Label(isUploadingReplyImage ? "正在上传图片…" : "添加图片", systemImage: "photo.badge.plus")
+                }
+                .disabled(isUploadingReplyImage)
                 Button("发送回复") { submitReply() }.disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Section {
@@ -148,6 +176,7 @@ private struct ForumPostView: View {
         .navigationTitle("帖子")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .onChange(of: replyAttachment) { item in uploadReplyImage(item) }
         .loading(isLoading)
     }
 
@@ -179,4 +208,26 @@ private struct ForumPostView: View {
             catch { model.errorMessage = error.localizedDescription }
         }
     }
+
+    private func uploadReplyImage(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        isUploadingReplyImage = true
+        Task {
+            defer { isUploadingReplyImage = false; replyAttachment = nil }
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
+                let response = try await model.api.upload(path: "/upload/image", data: data, filename: "reply-image.jpg")
+                guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
+                reply += "\n![图片](\(url.absoluteString))\n"
+            } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private func uploadedImageURL(from response: JSONValue) -> URL? {
+    let source = response["data"] ?? response
+    let raw = source["url"]?.stringValue ?? source["image_url"]?.stringValue ?? source["path"]?.stringValue
+    guard let raw else { return nil }
+    if let url = URL(string: raw), url.scheme != nil { return url }
+    return URL(string: raw, relativeTo: AppEnvironment.webBaseURL)?.absoluteURL
 }
