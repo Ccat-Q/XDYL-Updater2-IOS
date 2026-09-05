@@ -8,7 +8,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 2.0.5
+    MARKETING_VERSION: 2.0.6
     DEVELOPMENT_TEAM: ""
 targets:
   StarWave:

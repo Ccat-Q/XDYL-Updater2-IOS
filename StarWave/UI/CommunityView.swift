@@ -146,6 +146,7 @@ private struct ForumPostView: View {
     @State private var isLoading = false
     @State private var replyAttachment: PhotosPickerItem?
     @State private var isUploadingReplyImage = false
+    @State private var actionMessage: String?
 
     var body: some View {
         List {
@@ -169,8 +170,11 @@ private struct ForumPostView: View {
                 Button("发送回复") { submitReply() }.disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Section {
-                Button { action("/forum/post/\(post.id)/like") } label: { Label("点赞", systemImage: "hand.thumbsup") }
+                Button { action("/forum/post/\(post.id)/like", successMessage: "点赞成功") } label: {
+                    Label("点赞 · \(likeCount)", systemImage: "hand.thumbsup")
+                }
                 Button { action("/forum/post/\(post.id)/tip") } label: { Label("打赏", systemImage: "gift") }
+                if let actionMessage { Text(actionMessage).font(.footnote).foregroundStyle(.green) }
             }
         }
         .navigationTitle("帖子")
@@ -202,9 +206,15 @@ private struct ForumPostView: View {
         }
     }
 
-    private func action(_ path: String) {
+    private var likeCount: String { detail?.post.raw["likes"]?.stringValue ?? post.raw["likes"]?.stringValue ?? "0" }
+
+    private func action(_ path: String, successMessage: String? = nil) {
         Task {
-            do { _ = try await model.api.post(path: path, fields: [:]); await load() }
+            do {
+                _ = try await model.api.post(path: path, fields: [:])
+                await load()
+                actionMessage = successMessage
+            }
             catch { model.errorMessage = error.localizedDescription }
         }
     }

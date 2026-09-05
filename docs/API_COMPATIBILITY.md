@@ -30,6 +30,7 @@
 - 排行榜使用 `rank`、`coins` 或 `seconds`；客户端分别显示名次、喵币数和格式化时长。
 - 称号目录包含 `presets`、`custom`、`price_per_char`、`max_len`；自定义称号通过 `POST /titles/buy` 和字段 `title` 提交，必须在客户端二次确认后发出。
 - 论坛发帖/回复支持通过 `POST /upload/image` 上传图片。iOS 将返回的 `url`、`image_url` 或相对 `path` 插入正文为 Markdown 图片，随后随 `content` 一并提交。
+- 点赞使用 `POST /forum/post/{id}/like`；无令牌时服务返回 401（已核验），说明该路由有效。客户端在成功后重新加载帖子并展示 `likes` 计数。
 
 ## 验证约束
 
