@@ -1,0 +1,48 @@
+name: StarWave
+options:
+  bundleIdPrefix: com.ccatq
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 2.0.0
+    DEVELOPMENT_TEAM: ""
+targets:
+  StarWave:
+    type: application
+    platform: iOS
+    sources:
+      - path: StarWave
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ccatq.xdylupdater2
+        PRODUCT_NAME: "星灯云浪"
+        INFOPLIST_FILE: StarWave/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+    preBuildScripts:
+      - name: Prepare App Icon
+        script: |
+          /usr/bin/sips -z 1024 1024 "$SRCROOT/StarWave/Resources/AppIconSource.png" --out "$SRCROOT/StarWave/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+        inputFiles:
+          - $(SRCROOT)/StarWave/Resources/AppIconSource.png
+        outputFiles:
+          - $(SRCROOT)/StarWave/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+    scheme:
+      testTargets:
+        - StarWaveTests
+  StarWaveTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: StarWaveTests
+    dependencies:
+      - target: StarWave
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ccatq.xdylupdater2.tests
+        GENERATE_INFOPLIST_FILE: YES

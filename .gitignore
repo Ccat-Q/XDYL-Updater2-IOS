@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+StarWave.xcodeproj/
+artifacts/
+ModUpdater2.exe
+StarWave/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png

@@ -1,0 +1,65 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Run unit tests
+        run: >-
+          xcodebuild test
+          -project StarWave.xcodeproj
+          -scheme StarWave
+          -sdk iphonesimulator
+          -destination 'platform=iOS Simulator,name=iPhone 16'
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build re-signable app
+        run: >-
+          xcodebuild archive
+          -project StarWave.xcodeproj
+          -scheme StarWave
+          -configuration Release
+          -sdk iphoneos
+          -archivePath "$RUNNER_TEMP/StarWave.xcarchive"
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+      - name: Package IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$RUNNER_TEMP/StarWave.xcarchive/Products/Applications/星灯云浪.app" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          zip -qry StarWave-resignable.ipa Payload
+          shasum -a 256 StarWave-resignable.ipa > StarWave-resignable.ipa.sha256
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarWave-resignable
+          path: |
+            ${{ runner.temp }}/StarWave-resignable.ipa
+            ${{ runner.temp }}/StarWave-resignable.ipa.sha256
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "$RUNNER_TEMP/StarWave-resignable.ipa" "$RUNNER_TEMP/StarWave-resignable.ipa.sha256" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "$RUNNER_TEMP/StarWave-resignable.ipa" "$RUNNER_TEMP/StarWave-resignable.ipa.sha256" --generate-notes
+          fi
