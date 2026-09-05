@@ -97,14 +97,54 @@ private struct SettingsView: View {
                 Toggle("检查 IPA 更新", isOn: $updateChecksEnabled)
                 Link("打开 GitHub Releases", destination: AppEnvironment.repositoryReleasesURL)
             }
-            Section("旧服务安全") {
-                Label("账户与社区 API 使用 HTTP 明文连接", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                Text("客户端已限制域名和端口，但无法防止同一网络中的监听或篡改。请勿在公共 Wi-Fi 使用高价值密码。")
+            Section("诊断") {
+                NavigationLink { DiagnosticsView() } label: { Label("网络日志", systemImage: "doc.text.magnifyingglass") }
+                Text("日志只保存在本机，记录请求地址、时间和状态码；不会记录密码、令牌或请求内容。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("网络安全") {
+                Label("账户和社区服务使用 HTTPS", systemImage: "lock.shield")
+                    .foregroundStyle(.green)
+                Text("模组清单服务仍使用旧 HTTP 地址；不要在公共 Wi-Fi 下载或提交敏感信息。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("设置")
+    }
+}
+
+private struct DiagnosticsView: View {
+    @ObservedObject private var diagnostics = DiagnosticsStore.shared
+
+    var body: some View {
+        List {
+            Section {
+                if diagnostics.entries.isEmpty {
+                    Text("尚无网络请求记录。")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(diagnostics.entries.reversed()), id: \.self) { entry in
+                        Text(entry)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            } footer: {
+                Text("最多保留 300 条。日志不含密码、令牌和请求正文。")
+            }
+        }
+        .navigationTitle("网络日志")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if !diagnostics.entries.isEmpty {
+                    ShareLink(item: diagnostics.logURL) { Image(systemName: "square.and.arrow.up") }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("清除", role: .destructive) { diagnostics.clear() }
+                    .disabled(diagnostics.entries.isEmpty)
+            }
+        }
     }
 }
 
@@ -132,11 +172,14 @@ private struct QQBindingView: View {
 
     private func start() {
         polling = true
-        var components = URLComponents(url: AppEnvironment.webBaseURL.appendingPathComponent("qq-login"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [.init(name: "session_id", value: sessionID), .init(name: "mode", value: "bind")]
-        if let url = components.url { openURL(url) }
         Task {
             defer { polling = false }
+            do {
+                openURL(try await model.api.startQQLogin(sessionID: sessionID, mode: "bind"))
+            } catch {
+                model.errorMessage = error.localizedDescription
+                return
+            }
             for _ in 0..<45 {
                 do {
                     if try await model.api.bindQQ(sessionID: sessionID) {

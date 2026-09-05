@@ -7,6 +7,7 @@ final class APIClient: ObservableObject {
     private let session: URLSession
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
+    private let diagnostics = DiagnosticsStore.shared
 
     init(sessionStore: SessionStore, session: URLSession = .shared) {
         self.sessionStore = sessionStore
@@ -31,10 +32,12 @@ final class APIClient: ObservableObject {
 
     /// Starts the QQ flow and returns the provider authorization page.  The endpoint
     /// itself returns JSON (`data.login_url`), so it must never be opened directly.
-    func startQQLogin(sessionID: String) async throws -> URL {
+    func startQQLogin(sessionID: String, mode: String? = nil) async throws -> URL {
+        var query = [URLQueryItem(name: "session_id", value: sessionID)]
+        if let mode { query.append(URLQueryItem(name: "mode", value: mode)) }
         let value = try await send(APIRequest(
             path: "/qq-login",
-            query: [URLQueryItem(name: "session_id", value: sessionID)],
+            query: query,
             requiresAuthentication: false,
             baseURL: AppEnvironment.webBaseURL
         ))
@@ -107,6 +110,7 @@ final class APIClient: ObservableObject {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (responseData, response) = try await session.data(for: request)
+        diagnostics.record(method: request.httpMethod ?? "POST", url: url, status: (response as? HTTPURLResponse)?.statusCode)
         try validate(response: response, data: responseData)
         return responseData.isEmpty ? .object([:]) : try decoder.decode(JSONValue.self, from: responseData)
     }
@@ -140,6 +144,7 @@ final class APIClient: ObservableObject {
 
         do {
             let (data, response) = try await session.data(for: request)
+            diagnostics.record(method: endpoint.method.rawValue, url: url, status: (response as? HTTPURLResponse)?.statusCode)
             if (response as? HTTPURLResponse)?.statusCode == 401, allowRefresh, try await refreshToken() {
                 return try await send(endpoint, allowRefresh: false)
             }
@@ -149,8 +154,10 @@ final class APIClient: ObservableObject {
         } catch let error as AppError {
             throw error
         } catch let error as DecodingError {
+            diagnostics.record(method: endpoint.method.rawValue, url: url, detail: "响应解码失败：\(error.localizedDescription)")
             throw AppError.decoding(error.localizedDescription)
         } catch {
+            diagnostics.record(method: endpoint.method.rawValue, url: url, detail: error.localizedDescription)
             throw AppError.transport(error.localizedDescription)
         }
     }

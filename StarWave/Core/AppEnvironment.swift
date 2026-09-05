@@ -1,7 +1,9 @@
 import Foundation
 
 enum AppEnvironment {
-    static let apiBaseURL = URL(string: "http://api.lanternwaves.fun:8080")!
+    /// The former `api.lanternwaves.fun:8080` service now returns 404 for every
+    /// application route.  Community and identity endpoints are served here.
+    static let apiBaseURL = URL(string: "https://login.lanternwaves.fun")!
     static let modsBaseURL = URL(string: "http://api.lanternwaves.fun:5551/mods")!
     static let webBaseURL = URL(string: "https://login.lanternwaves.fun")!
     static let releasesURL = URL(string: "https://api.github.com/repos/Ccat-Q/XDYL-Updater2-IOS/releases/latest")!
