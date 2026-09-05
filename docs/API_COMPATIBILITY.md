@@ -13,7 +13,7 @@
 
 ## 已映射功能
 
-- 身份：`/login`、`/refresh`、`/register`、`/forgot-password`、`/reset-password`、`/send-verify-code`、`/check-qq-login`、`/notify-login`。
+- 身份：`/login`、`/refresh`、`/register`、`/forgot-password`、`/reset-password`、`/send-verify-code`、`/check-qq-login`、`/notify-login`。登录使用字段 `account`（邮箱或用户名）和 `password`；QQ 登录先请求 `/qq-login`，读取 `data.login_url`，再打开 QQ 授权页。
 - 用户：`/user/profile`、`/user/avatar`、`/user/password`、`/user/change-username`、`/user/bind-qq`、`/user/unbind-qq`、`/user/items`、`/user/emojis`。
 - 社区：`/forum/categories`、`/forum/posts`、`/forum/post`、帖子详情的 `/reply`、`/like`、`/tip`，以及 `/upload/image`。
 - 游戏：`/seasons`、`/server/players`、`/rank/coins`、`/rank/playtime`、`/playtime/rewards`、`/tasks`、`/polls`、`/vote`。
@@ -24,4 +24,3 @@
 ## 验证约束
 
 旧程序经过裁剪，字段模型不能仅靠字符串完整恢复。客户端因此先用容错 JSON envelope 解码；获得低权限测试账号后，必须逐接口记录方法、请求字段、响应样例和错误码，再把已验证的关键响应收紧为具体模型。任何会修改服务器状态的验证只能使用测试数据。
-

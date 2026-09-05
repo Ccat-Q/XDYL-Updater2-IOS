@@ -14,20 +14,37 @@ final class APIClient: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
     }
 
-    func login(username: String, password: String) async throws -> AuthTokens {
+    /// The legacy identity service accepts `account` (an email address or username),
+    /// not the community API's `username` field.
+    func login(account: String, password: String) async throws -> AuthTokens {
         let value = try await send(APIRequest(
             path: "/login",
             method: .post,
-            body: .object(["username": .string(username), "password": .string(password)]),
-            requiresAuthentication: false
+            body: .object(["account": .string(account), "password": .string(password)]),
+            requiresAuthentication: false,
+            baseURL: AppEnvironment.webBaseURL
         ))
         guard let tokens = AuthTokens(json: value) else { throw AppError.decoding("登录响应中没有令牌") }
         sessionStore.save(tokens)
         return tokens
     }
 
-    func startQQLogin(sessionID: String) -> URL {
-        AppEnvironment.webBaseURL.appendingPathComponent("qq-login").appending(queryItems: [.init(name: "session_id", value: sessionID)])
+    /// Starts the QQ flow and returns the provider authorization page.  The endpoint
+    /// itself returns JSON (`data.login_url`), so it must never be opened directly.
+    func startQQLogin(sessionID: String) async throws -> URL {
+        let value = try await send(APIRequest(
+            path: "/qq-login",
+            query: [URLQueryItem(name: "session_id", value: sessionID)],
+            requiresAuthentication: false,
+            baseURL: AppEnvironment.webBaseURL
+        ))
+        guard let rawURL = value["data"]?["login_url"]?.stringValue ?? value["login_url"]?.stringValue,
+              let url = URL(string: rawURL),
+              url.scheme == "https",
+              url.host?.lowercased() == "graph.qq.com" else {
+            throw AppError.decoding("QQ 登录服务没有返回有效的授权地址")
+        }
+        return url
     }
 
     func pollQQLogin(sessionID: String) async throws -> AuthTokens? {
@@ -50,8 +67,8 @@ final class APIClient: ObservableObject {
         try await send(APIRequest(path: path, requiresAuthentication: requiresAuthentication, baseURL: baseURL))
     }
 
-    func post(path: String, fields: [String: JSONValue], requiresAuthentication: Bool = true) async throws -> JSONValue {
-        try await send(APIRequest(path: path, method: .post, body: .object(fields), requiresAuthentication: requiresAuthentication))
+    func post(path: String, fields: [String: JSONValue], requiresAuthentication: Bool = true, baseURL: URL = AppEnvironment.apiBaseURL) async throws -> JSONValue {
+        try await send(APIRequest(path: path, method: .post, body: .object(fields), requiresAuthentication: requiresAuthentication, baseURL: baseURL))
     }
 
     func markNotificationsRead() async throws {
@@ -141,9 +158,9 @@ final class APIClient: ObservableObject {
     private func qqStatus(sessionID: String) async throws -> JSONValue {
         let query = [URLQueryItem(name: "session_id", value: sessionID)]
         do {
-            return try await send(APIRequest(path: "/check-qq-login", query: query, requiresAuthentication: false))
-        } catch {
             return try await send(APIRequest(path: "/check-qq-login", query: query, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL))
+        } catch {
+            return try await send(APIRequest(path: "/check-qq-login", query: query, requiresAuthentication: false))
         }
     }
 
@@ -165,7 +182,8 @@ final class APIClient: ObservableObject {
             path: "/refresh",
             method: .post,
             body: .object(["refresh_token": .string(refresh)]),
-            requiresAuthentication: false
+            requiresAuthentication: false,
+            baseURL: AppEnvironment.webBaseURL
         ), allowRefresh: false)
         guard let tokens = AuthTokens(json: value) else { return false }
         sessionStore.save(tokens)

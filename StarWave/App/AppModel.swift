@@ -27,9 +27,9 @@ final class AppModel: ObservableObject {
         await refreshUnreadCount()
     }
 
-    func login(username: String, password: String) async -> Bool {
+    func login(account: String, password: String) async -> Bool {
         await perform {
-            _ = try await self.api.login(username: username, password: password)
+            _ = try await self.api.login(account: account, password: password)
             await self.refreshProfile()
         }
         return isAuthenticated

@@ -30,7 +30,7 @@ struct AuthView: View {
                             .textContentType(.password)
                             .textFieldStyle(.roundedBorder)
                         Button {
-                            Task { _ = await model.login(username: username, password: password) }
+                            Task { _ = await model.login(account: username, password: password) }
                         } label: {
                             Label("登录", systemImage: "person.badge.key").frame(maxWidth: .infinity)
                         }
@@ -72,9 +72,14 @@ struct AuthView: View {
         let id = UUID().uuidString
         qqSessionID = id
         isPollingQQ = true
-        openURL(model.api.startQQLogin(sessionID: id))
         Task {
             defer { isPollingQQ = false }
+            do {
+                openURL(try await model.api.startQQLogin(sessionID: id))
+            } catch {
+                model.errorMessage = error.localizedDescription
+                return
+            }
             for _ in 0..<45 {
                 if await model.completeQQLogin(sessionID: id) { return }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -130,7 +135,7 @@ private struct AccountFlowView: View {
         Task {
             defer { busy = false }
             do {
-                _ = try await model.api.post(path: "/send-verify-code", fields: ["email": .string(email), "purpose": .string(flow.purpose)], requiresAuthentication: false)
+                _ = try await model.api.post(path: "/send-verify-code", fields: ["email": .string(email), "purpose": .string(flow.purpose)], requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
                 message = "验证码已发送"
             } catch { model.errorMessage = error.localizedDescription }
         }
@@ -143,7 +148,7 @@ private struct AccountFlowView: View {
             do {
                 var fields: [String: JSONValue] = ["email": .string(email), "password": .string(password), "code": .string(code)]
                 if flow == .register { fields["username"] = .string(username) }
-                _ = try await model.api.post(path: flow == .register ? "/register" : "/reset-password", fields: fields, requiresAuthentication: false)
+                _ = try await model.api.post(path: flow == .register ? "/register" : "/reset-password", fields: fields, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
                 dismiss()
             } catch { model.errorMessage = error.localizedDescription }
         }
