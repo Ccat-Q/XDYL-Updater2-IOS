@@ -31,7 +31,7 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
       - name: Run unit tests when a simulator runtime is available
         run: |
-          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for values in d.values() for x in values if x.get("isAvailable")), ""))')"
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for runtime, values in d.items() if ".iOS-" in runtime for x in values if x.get("isAvailable")), ""))')"
           if [ -n "$DEVICE_ID" ]; then
             xcodebuild test-without-building -project StarWave.xcodeproj -scheme StarWave -destination "platform=iOS Simulator,id=$DEVICE_ID" CODE_SIGNING_ALLOWED=NO
           else
