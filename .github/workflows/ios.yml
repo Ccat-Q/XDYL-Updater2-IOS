@@ -42,7 +42,7 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p "$RUNNER_TEMP/Payload"
-          cp -R "$RUNNER_TEMP/StarWave.xcarchive/Products/Applications/星灯云浪.app" "$RUNNER_TEMP/Payload/"
+          cp -R "$RUNNER_TEMP/StarWave.xcarchive/Products/Applications/StarWave.app" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
           zip -qry StarWave-resignable.ipa Payload
           shasum -a 256 StarWave-resignable.ipa > StarWave-resignable.ipa.sha256
