@@ -152,7 +152,7 @@ struct StyledTitleText: View {
     }
 }
 
-private enum TitleColor {
+enum TitleColor {
     struct Segment {
         let text: String
         let color: Color
@@ -179,6 +179,16 @@ private enum TitleColor {
         let trailing = String(value[cursor...])
         if !trailing.isEmpty { result.append(Segment(text: trailing, color: activeColor)) }
         return result.isEmpty ? [Segment(text: value, color: defaultColor)] : result
+    }
+
+    static func removingTokens(from value: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: #"&#[0-9A-Fa-f]{6}"#) else { return value }
+        let range = NSRange(value.startIndex..., in: value)
+        return expression.stringByReplacingMatches(in: value, range: range, withTemplate: "")
+    }
+
+    static func visibleCharacterCount(in value: String) -> Int {
+        removingTokens(from: value).count
     }
 
     static func color(from value: String?) -> Color? {

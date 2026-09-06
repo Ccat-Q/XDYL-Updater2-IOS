@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct ServicesView: View {
     var body: some View {
@@ -251,24 +252,145 @@ private struct CustomTitlePurchaseView: View {
     @Environment(\.dismiss) private var dismiss
     let onComplete: () async -> Void
     @State private var title = ""
+    @State private var selectedColor = Color.accentColor
+    @State private var rules: CustomTitleRules?
+    @State private var isLoadingRules = false
     @State private var showingConfirmation = false
     @State private var isSubmitting = false
 
     var body: some View {
         NavigationStack {
             Form {
-                TextField("输入新称号", text: $title)
-                Text("价格和最大长度由服务器校验；提交前会再次确认。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Section("称号内容") {
+                    TextField("输入新称号", text: $title, axis: .vertical)
+                        .lineLimit(1...3)
+                    HStack {
+                        Text("可见字符")
+                        Spacer()
+                        Text(lengthDescription).foregroundStyle(isOverLimit ? .red : .secondary)
+                    }
+                    Text("颜色代码会随称号提交，但不会显示在预览中。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("颜色代码") {
+                    ColorPicker("选择颜色", selection: $selectedColor, supportsOpacity: false)
+                    Button {
+                        insertColorCode()
+                    } label: {
+                        Label("插入颜色代码", systemImage: "paintpalette")
+                    }
+                    Button("清除全部颜色代码", role: .destructive) {
+                        title = TitleColor.removingTokens(from: title)
+                    }
+                    .disabled(!title.contains("&#"))
+                    LabeledContent("当前代码", value: colorToken)
+                        .font(.caption.monospaced())
+                }
+
+                Section("预览") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("游戏内显示效果").font(.caption).foregroundStyle(.secondary)
+                        if visibleTitle.isEmpty {
+                            Text("输入称号后将在这里预览")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            StyledTitleText(title)
+                                .font(.title3.bold())
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .accessibilityLabel("称号预览：\(visibleTitle)")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section("扣费说明") {
+                    if isLoadingRules {
+                        HStack { ProgressView(); Text("正在读取服务器定价规则…") }
+                    } else if let rules {
+                        if let price = rules.pricePerCharacter {
+                            LabeledContent("单价", value: "\(price) 喵币 / 字")
+                        }
+                        if let maximumLength = rules.maximumLength {
+                            LabeledContent("最多长度", value: "\(maximumLength) 个可见字符")
+                        }
+                        if let estimate = rules.estimatedCost(visibleCharacters: visibleCharacterCount) {
+                            LabeledContent("预计扣费", value: "\(estimate) 喵币")
+                                .fontWeight(.semibold)
+                        }
+                        Text("按目录返回的每字价格和可见字符数预估；提交时颜色代码也会发送，服务端会按最终规则校验并从喵币余额扣除。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("未能读取定价规则。可以继续提交，价格、最大长度和扣费结果以服务端校验为准。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle("自定义称号")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("继续") { showingConfirmation = true }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("继续") { showingConfirmation = true }
+                        .disabled(!canSubmit || isSubmitting)
+                }
             }
             .confirmationDialog("确认购买自定义称号？", isPresented: $showingConfirmation, titleVisibility: .visible) {
                 Button("确认提交", role: .destructive) { submit() }
-            } message: { Text("服务器会按实际规则扣除喵币。") }
+            } message: { Text(confirmationMessage) }
+        }
+        .task { await loadRules() }
+    }
+
+    private var colorToken: String {
+        let color = UIColor(selectedColor)
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return "&#FFFFFF" }
+        return String(format: "&#%02X%02X%02X", Int((red * 255).rounded()), Int((green * 255).rounded()), Int((blue * 255).rounded()))
+    }
+
+    private var visibleTitle: String {
+        TitleColor.removingTokens(from: title).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var visibleCharacterCount: Int { TitleColor.visibleCharacterCount(in: title) }
+
+    private var isOverLimit: Bool {
+        guard let maximumLength = rules?.maximumLength else { return false }
+        return visibleCharacterCount > maximumLength
+    }
+
+    private var canSubmit: Bool { !visibleTitle.isEmpty && !isOverLimit }
+
+    private var lengthDescription: String {
+        if let maximumLength = rules?.maximumLength { return "\(visibleCharacterCount) / \(maximumLength)" }
+        return "\(visibleCharacterCount)"
+    }
+
+    private var confirmationMessage: String {
+        var lines = ["称号：\(visibleTitle)"]
+        if let estimate = rules?.estimatedCost(visibleCharacters: visibleCharacterCount) {
+            lines.append("预计扣除：\(estimate) 喵币")
+        }
+        lines.append("服务端会校验长度、价格和余额后再扣费。")
+        return lines.joined(separator: "\n")
+    }
+
+    private func insertColorCode() {
+        title += colorToken
+    }
+
+    private func loadRules() async {
+        isLoadingRules = true
+        defer { isLoadingRules = false }
+        do {
+            rules = CustomTitleRules(json: try await model.api.value(path: "/titles/catalog"))
+        } catch {
+            // Keep purchase available for a temporarily unavailable catalog; the
+            // server remains authoritative when the user confirms the request.
+            rules = nil
         }
     }
 

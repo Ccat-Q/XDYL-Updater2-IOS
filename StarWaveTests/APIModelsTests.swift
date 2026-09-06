@@ -63,4 +63,18 @@ final class APIModelsTests: XCTestCase {
         XCTAssertFalse(AppEnvironment.permitsDownload(from: URL(string: "http://api.lanternwaves.fun/file.zip")!))
         XCTAssertFalse(AppEnvironment.permitsDownload(from: URL(string: "http://other.example/file.zip")!))
     }
+
+    func testCustomTitleRulesUseCatalogPriceAndLimit() throws {
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"data":{"custom":{"price_per_char":12,"max_len":8}}}"#.utf8))
+        let rules = CustomTitleRules(json: value)
+        XCTAssertEqual(rules.pricePerCharacter, 12)
+        XCTAssertEqual(rules.maximumLength, 8)
+        XCTAssertEqual(rules.estimatedCost(visibleCharacters: 3), 36)
+    }
+
+    func testTitleColorTokensDoNotCountAsVisibleTitleCharacters() {
+        let title = "&#FF0000赤&#00FF00青"
+        XCTAssertEqual(TitleColor.removingTokens(from: title), "赤青")
+        XCTAssertEqual(TitleColor.visibleCharacterCount(in: title), 2)
+    }
 }

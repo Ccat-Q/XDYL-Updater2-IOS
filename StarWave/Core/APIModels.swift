@@ -109,6 +109,33 @@ struct UserProfile: Equatable {
     var isAdministrator: Bool { role == "admin" || role == "super_admin" }
 }
 
+/// Rules returned by `/titles/catalog` for a user-created title.
+/// The service owns the final validation and debit; this type only exposes its
+/// advertised price and length limit for a transparent client-side estimate.
+struct CustomTitleRules: Equatable {
+    let pricePerCharacter: Int?
+    let maximumLength: Int?
+
+    init(json: JSONValue) {
+        let root = json["data"] ?? json
+        let source = root["custom"] ?? root
+        pricePerCharacter = Self.integer(in: source, keys: ["price_per_char", "pricePerChar"])
+        maximumLength = Self.integer(in: source, keys: ["max_len", "max_length", "maxLen"])
+    }
+
+    func estimatedCost(visibleCharacters: Int) -> Int? {
+        guard let pricePerCharacter else { return nil }
+        return max(0, visibleCharacters) * pricePerCharacter
+    }
+
+    private static func integer(in value: JSONValue, keys: [String]) -> Int? {
+        for key in keys {
+            if let number = Int(value[key]?.stringValue ?? "") { return number }
+        }
+        return nil
+    }
+}
+
 struct RemoteItem: Identifiable, Hashable {
     let id: String
     let title: String
