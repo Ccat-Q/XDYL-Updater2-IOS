@@ -98,7 +98,7 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(ranks[1].coins, 12)
     }
 
-    func testDeveloperRedactionHidesCommonSecrets() {
+    @MainActor func testDeveloperRedactionHidesCommonSecrets() {
         let value = #"{"token":"secret","password":"pw","ok":"visible"}"#
         let redacted = DeveloperToolsStore.redact(value)
         XCTAssertFalse(redacted.contains("secret"))
