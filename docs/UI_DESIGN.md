@@ -52,3 +52,7 @@ StarWave 使用系统 SwiftUI 组件呈现接近原生 iOS 的体验。使用 Xc
 - iOS 16 至 iOS 25 能启动、导航并显示材质降级效果。
 - 五个标签、通知徽标、刷新、发帖、图片、点赞、下载、任务、排行榜、称号和设置行为保持可用。
 - 小屏、大字体、浅色、深色和无障碍显示设置下均可滚动、点击并阅读。
+
+## 构建缓存
+
+CI 按 Xcode 主版本隔离缓存 Homebrew/XcodeGen 下载、SwiftPM 缓存和 Xcode DerivedData。DerivedData 的主键包含工程与全部 Swift 源码哈希，并使用同 Xcode 版本的恢复前缀加速增量编译；IPA、签名数据、用户数据和模拟器设备状态不进入缓存。
