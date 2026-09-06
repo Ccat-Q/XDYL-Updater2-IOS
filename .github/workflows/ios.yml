@@ -79,7 +79,7 @@ jobs:
           zip -qry StarWave-resignable.ipa Payload
           shasum -a 256 StarWave-resignable.ipa > StarWave-resignable.ipa.sha256
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: StarWave-resignable
           path: |
