@@ -21,7 +21,7 @@ jobs:
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
       - name: Restore build tool caches
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -31,7 +31,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-xcode26.6-tools-
       - name: Restore Xcode DerivedData
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/Library/Caches/StarWave/DerivedData
           key: ${{ runner.os }}-xcode26.6-derived-${{ hashFiles('project.yml', 'StarWave/**/*.swift', 'StarWaveTests/**/*.swift') }}
@@ -105,7 +105,7 @@ jobs:
       - name: Select Xcode 16
         run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
       - name: Restore build tool caches
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -115,7 +115,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-xcode16.4-tools-
       - name: Restore Xcode DerivedData
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/Library/Caches/StarWave/DerivedData
           key: ${{ runner.os }}-xcode16.4-derived-${{ hashFiles('project.yml', 'StarWave/**/*.swift', 'StarWaveTests/**/*.swift') }}
