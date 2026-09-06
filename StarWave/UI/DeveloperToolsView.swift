@@ -187,14 +187,14 @@ private struct DeveloperRouteCatalogView: View {
     ]
     var body: some View {
         List {
-            Section("已知接口") {
+            Section {
                 ForEach(routes) { route in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(route.path).font(.system(.body, design: .monospaced))
                         Text("\(route.method) · \(route.authenticated ? "需要认证" : "匿名")").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-            } footer: { Text("目录是快速入口；请求控制台支持任意路径与手动 URL。") }
+            } header: { Text("已知接口") } footer: { Text("目录是快速入口；请求控制台支持任意路径与手动 URL。") }
         }.navigationTitle("接口目录")
     }
 }

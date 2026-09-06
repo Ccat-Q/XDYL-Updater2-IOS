@@ -129,9 +129,9 @@ final class DeveloperToolsStore: ObservableObject {
         if redacted {
             payload = sessions.map { session in
                 var copy = session
-                copy.requestBody = copy.requestBody.map(redact)
-                copy.responseBody = redact(copy.responseBody)
-                copy.responseHeaders = copy.responseHeaders.mapValues(redact)
+                copy.requestBody = copy.requestBody.map(DeveloperToolsStore.redact)
+                copy.responseBody = DeveloperToolsStore.redact(copy.responseBody)
+                copy.responseHeaders = copy.responseHeaders.mapValues(DeveloperToolsStore.redact)
                 return copy
             }
         } else { payload = sessions }
@@ -163,11 +163,7 @@ final class DeveloperToolsStore: ObservableObject {
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder.pretty.encode(value) else { return }
         do {
-            try data.write(to: url, options: .atomic)
-            var values = URLResourceValues()
-            values.fileProtection = .complete
-            var mutableURL = url
-            try mutableURL.setResourceValues(values)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
         } catch { }
     }
 
@@ -185,10 +181,10 @@ final class DeveloperRequestExecutor {
     private let session: URLSession
     private let store: DeveloperToolsStore
 
-    init(sessionStore: SessionStore, session: URLSession = .shared, store: DeveloperToolsStore = .shared) {
+    init(sessionStore: SessionStore, session: URLSession = .shared, store: DeveloperToolsStore? = nil) {
         self.sessionStore = sessionStore
         self.session = session
-        self.store = store
+        self.store = store ?? .shared
     }
 
     func execute(
@@ -200,7 +196,7 @@ final class DeveloperRequestExecutor {
         let started = Date()
         let requestBody = upload == nil ? draft.jsonBody : "multipart: \(uploadFilename ?? "file")"
         do {
-            var components = try urlComponents(baseURL: baseURL, path: draft.path, query: draft.query)
+            let components = try urlComponents(baseURL: baseURL, path: draft.path, query: draft.query)
             guard let url = components.url else { throw AppError.transport("开发者地址无效") }
             var request = URLRequest(url: url, timeoutInterval: upload == nil ? 30 : 120)
             request.httpMethod = draft.method.rawValue
