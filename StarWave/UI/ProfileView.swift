@@ -8,6 +8,8 @@ struct ProfileView: View {
     @State private var showingPassword = false
     @State private var showingQQBinding = false
     @State private var avatarItem: PhotosPickerItem?
+    @State private var developerTapCount = 0
+    @AppStorage("developer.enabled") private var developerEnabled = false
 
     var body: some View {
         List {
@@ -50,6 +52,12 @@ struct ProfileView: View {
                     Button { openURL(AppEnvironment.webBaseURL.appendingPathComponent("webadmin")) } label: { Label("管理后台", systemImage: "lock.shield") }
                 }
                 HStack { Text("版本"); Spacer(); Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-").foregroundStyle(.secondary) }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard !developerEnabled else { return }
+                        developerTapCount += 1
+                        if developerTapCount >= 7 { developerEnabled = true; developerTapCount = 0 }
+                    }
             }
             Section {
                 Button("退出登录", role: .destructive) { model.logout() }
@@ -86,6 +94,7 @@ struct ProfileView: View {
 private struct SettingsView: View {
     @AppStorage("allowCellularDownloads") private var allowCellularDownloads = true
     @AppStorage("updateChecksEnabled") private var updateChecksEnabled = true
+    @AppStorage("developer.enabled") private var developerEnabled = false
 
     var body: some View {
         Form {
@@ -103,6 +112,14 @@ private struct SettingsView: View {
                 Text("日志只保存在本机，记录请求地址、时间和状态码；不会记录密码、令牌或请求内容。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if developerEnabled {
+                Section("开发者") {
+                    NavigationLink { DeveloperToolsView() } label: { Label("开发者功能", systemImage: "hammer") }
+                    Button("关闭开发者功能", role: .destructive) { developerEnabled = false }
+                    Text("开发者请求台可向自定义 HTTP/HTTPS 地址发送请求，并可选择携带登录令牌。")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
             Section("网络安全") {
                 Label("账户和社区服务使用 HTTPS", systemImage: "lock.shield")
                     .foregroundStyle(.green)
@@ -114,7 +131,7 @@ private struct SettingsView: View {
     }
 }
 
-private struct DiagnosticsView: View {
+struct DiagnosticsView: View {
     @ObservedObject private var diagnostics = DiagnosticsStore.shared
 
     var body: some View {

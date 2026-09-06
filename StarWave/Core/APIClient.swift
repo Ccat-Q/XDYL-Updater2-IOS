@@ -109,8 +109,9 @@ final class APIClient: ObservableObject {
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let started = Date()
         let (responseData, response) = try await session.data(for: request)
-        diagnostics.record(method: request.httpMethod ?? "POST", url: url, status: (response as? HTTPURLResponse)?.statusCode)
+        diagnostics.record(method: request.httpMethod ?? "POST", url: url, status: (response as? HTTPURLResponse)?.statusCode, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), responseBytes: responseData.count)
         try validate(response: response, data: responseData)
         return responseData.isEmpty ? .object([:]) : try decoder.decode(JSONValue.self, from: responseData)
     }
@@ -143,8 +144,9 @@ final class APIClient: ObservableObject {
         }
 
         do {
+            let started = Date()
             let (data, response) = try await session.data(for: request)
-            diagnostics.record(method: endpoint.method.rawValue, url: url, status: (response as? HTTPURLResponse)?.statusCode)
+            diagnostics.record(method: endpoint.method.rawValue, url: url, status: (response as? HTTPURLResponse)?.statusCode, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), responseBytes: data.count)
             if (response as? HTTPURLResponse)?.statusCode == 401, allowRefresh, try await refreshToken() {
                 return try await send(endpoint, allowRefresh: false)
             }

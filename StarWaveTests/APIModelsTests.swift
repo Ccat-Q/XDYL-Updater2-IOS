@@ -97,4 +97,19 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(ranks[1].name, "猫")
         XCTAssertEqual(ranks[1].coins, 12)
     }
+
+    func testDeveloperRedactionHidesCommonSecrets() {
+        let value = #"{"token":"secret","password":"pw","ok":"visible"}"#
+        let redacted = DeveloperToolsStore.redact(value)
+        XCTAssertFalse(redacted.contains("secret"))
+        XCTAssertFalse(redacted.contains("\"pw\""))
+        XCTAssertTrue(redacted.contains("visible"))
+    }
+
+    func testDeveloperHTTPMethodIdentifiesMutations() {
+        XCTAssertFalse(DeveloperHTTPMethod.get.changesServerState)
+        XCTAssertTrue(DeveloperHTTPMethod.post.changesServerState)
+        XCTAssertTrue(DeveloperHTTPMethod.put.changesServerState)
+        XCTAssertTrue(DeveloperHTTPMethod.delete.changesServerState)
+    }
 }

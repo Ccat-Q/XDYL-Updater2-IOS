@@ -56,3 +56,5 @@ StarWave 使用系统 SwiftUI 组件呈现接近原生 iOS 的体验。使用 Xc
 ## 构建缓存
 
 CI 按 Xcode 主版本隔离缓存 Homebrew/XcodeGen 下载、SwiftPM 缓存和 Xcode DerivedData。DerivedData 的主键包含工程与全部 Swift 源码哈希，并使用同 Xcode 版本的恢复前缀加速增量编译；IPA、签名数据、用户数据和模拟器设备状态不进入缓存。
+
+开发者功能默认隐藏，通过设置页版本号连续点按 7 次启用。入口使用原生 List/Form，按接口调试、运行状态和本地数据分组；自定义 HTTP 与令牌外发必须以醒目的风险提示展示，写请求需要确认。性能页默认仅在打开时每 2 秒采样；“持续采样”开启后才在 App 运行期间持续记录。

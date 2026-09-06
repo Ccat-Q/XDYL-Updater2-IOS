@@ -29,9 +29,11 @@ final class DiagnosticsStore: ObservableObject {
         return directory.appendingPathComponent("StarWave-network.log")
     }
 
-    func record(method: String, url: URL, status: Int? = nil, detail: String? = nil) {
+    func record(method: String, url: URL, status: Int? = nil, durationMilliseconds: Int? = nil, responseBytes: Int? = nil, detail: String? = nil) {
         var line = "\(formatter.string(from: Date())) \(method) \(url.absoluteString)"
         if let status { line += " → HTTP \(status)" }
+        if let durationMilliseconds { line += " · \(durationMilliseconds) ms" }
+        if let responseBytes { line += " · \(responseBytes) B" }
         if let detail, !detail.isEmpty { line += " — \(detail)" }
         entries.append(line)
         if entries.count > maximumEntries { entries.removeFirst(entries.count - maximumEntries) }
