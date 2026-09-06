@@ -149,6 +149,9 @@ private struct ForumPostView: View {
     @State private var replyAttachment: PhotosPickerItem?
     @State private var isUploadingReplyImage = false
     @State private var actionMessage: String?
+    @State private var showingTip = false
+    @State private var tipAmount = ""
+    @State private var isTipping = false
 
     var body: some View {
         List {
@@ -175,7 +178,7 @@ private struct ForumPostView: View {
                 Button { action("/forum/post/\(post.id)/like", successMessage: "点赞成功") } label: {
                     Label("点赞 · \(likeCount)", systemImage: "hand.thumbsup")
                 }
-                Button { action("/forum/post/\(post.id)/tip") } label: { Label("打赏", systemImage: "gift") }
+                Button { tipAmount = ""; showingTip = true } label: { Label("打赏", systemImage: "gift") }
                 if let actionMessage { Text(actionMessage).font(.footnote).foregroundStyle(.green) }
             }
         }
@@ -183,6 +186,7 @@ private struct ForumPostView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .onChange(of: replyAttachment) { item in uploadReplyImage(item) }
+        .sheet(isPresented: $showingTip) { tipSheet }
         .loading(isLoading)
     }
 
@@ -223,6 +227,41 @@ private struct ForumPostView: View {
                 }
             }
             catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+
+    private var tipSheet: some View {
+        NavigationStack {
+            Form {
+                Section("打赏金额") {
+                    TextField("输入喵币数量", text: $tipAmount)
+                        .keyboardType(.numberPad)
+                    Text("打赏会立即从你的喵币余额扣除，金额以服务器结算结果为准。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("打赏帖子")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { showingTip = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isTipping ? "正在打赏…" : "确认打赏") { submitTip() }
+                        .disabled(Int(tipAmount) == nil || Int(tipAmount) ?? 0 <= 0 || isTipping)
+                }
+            }
+        }
+    }
+
+    private func submitTip() {
+        guard let amount = Int(tipAmount), amount > 0 else { return }
+        isTipping = true
+        Task {
+            defer { isTipping = false }
+            do {
+                _ = try await model.api.post(path: "/forum/post/\(post.id)/tip", fields: ["amount": .number(Double(amount))])
+                showingTip = false
+                actionMessage = "已打赏 \(amount) 喵币"
+                await model.refreshProfile()
+            } catch { model.errorMessage = error.localizedDescription }
         }
     }
 

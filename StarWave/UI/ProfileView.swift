@@ -286,8 +286,7 @@ private struct NotificationsView: View {
         defer { loading = false }
         do {
             items = try await model.api.values(path: "/notifications")
-            try await model.api.markNotificationsRead()
-            await model.refreshUnreadCount()
+            try await model.markAllNotificationsRead()
         } catch { model.errorMessage = error.localizedDescription }
     }
 }

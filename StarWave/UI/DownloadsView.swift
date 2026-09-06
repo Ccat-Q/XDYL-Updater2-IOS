@@ -4,7 +4,7 @@ struct DownloadsView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject private var manager = DownloadManager.shared
     @State private var selection = 0
-    @State private var resources: [RemoteItem] = []
+    @State private var resources: [ResourceFile] = []
     @State private var isLoading = false
 
     var body: some View {
@@ -53,11 +53,15 @@ struct DownloadsView: View {
                             HStack {
                                 Text(label(for: record.state)).font(.caption).foregroundStyle(.secondary)
                                 Spacer()
-                                if record.state == .failed { Button("重试") { manager.retry(record) } }
+                                if record.state == .failed {
+                                    Button("重试") { manager.retry(record) }
+                                        .buttonStyle(.borderless)
+                                }
                                 if record.state == .completed, let url = record.localURL {
                                     ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
                                 }
                                 Button(role: .destructive) { manager.delete(record) } label: { Image(systemName: "trash") }
+                                    .buttonStyle(.borderless)
                             }
                             if let message = record.message { Text(message).font(.caption2).foregroundStyle(.secondary) }
                         }
@@ -69,13 +73,13 @@ struct DownloadsView: View {
         }
     }
 
-    private func resourceRow(_ item: RemoteItem) -> some View {
+    private func resourceRow(_ item: ResourceFile) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            RemoteItemRow(item: item)
-            if let url = firstURL(in: item.raw) {
+            Text(item.name).font(.headline).lineLimit(3)
+            Text(item.description).font(.caption).foregroundStyle(.secondary)
+            if let url = item.url {
                 Button {
-                    let hash = item.raw["sha256"]?.stringValue ?? item.raw["hash"]?.stringValue
-                    manager.enqueue(url: url, filename: item.raw["name"]?.stringValue ?? item.raw["filename"]?.stringValue ?? url.lastPathComponent, expectedSHA256: hash)
+                    manager.enqueue(url: url, filename: item.name, expectedSHA256: item.sha256)
                     selection = 1
                 } label: {
                     Label("下载到“文件”App", systemImage: "arrow.down.circle")
@@ -88,20 +92,6 @@ struct DownloadsView: View {
         .padding(.vertical, 4)
     }
 
-    private func firstURL(in value: JSONValue) -> URL? {
-        if let string = value.stringValue, let url = URL(string: string), ["http", "https"].contains(url.scheme) { return url }
-        if case let .object(object) = value {
-            for key in ["url", "download_url", "link", "pack_zip", "direct_url"] {
-                if let candidate = object[key], let url = firstURL(in: candidate) { return url }
-            }
-            for candidate in object.values { if let url = firstURL(in: candidate) { return url } }
-        }
-        if case let .array(array) = value {
-            for candidate in array { if let url = firstURL(in: candidate) { return url } }
-        }
-        return nil
-    }
-
     private func load() async {
         isLoading = true
         defer { isLoading = false }
@@ -110,7 +100,7 @@ struct DownloadsView: View {
             // names, SHA-256 values and direct download URLs. `/mods/list` returns
             // grouping data and must not be treated as downloadable files.
             let manifest = try await model.api.value(path: "/mods.json", requiresAuthentication: false, baseURL: AppEnvironment.modsBaseURL)
-            resources = RemoteItem.list(from: manifest)
+            resources = ResourceFile.list(from: manifest)
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -121,6 +111,39 @@ struct DownloadsView: View {
         case .verifying: return "正在校验 SHA-256"
         case .completed: return "下载完成"
         case .failed: return "下载失败"
+        }
+    }
+}
+
+struct ResourceFile: Identifiable {
+    let name: String
+    let url: URL?
+    let sha256: String?
+    let size: Int64?
+    let kind: String?
+
+    var id: String { url?.absoluteString ?? name }
+    var description: String {
+        var values: [String] = []
+        if let kind, !kind.isEmpty { values.append(kind == "pack_zip" ? "整合包" : "模组") }
+        if let size { values.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) }
+        return values.isEmpty ? "服务器资源" : values.joined(separator: " · ")
+    }
+
+    static func list(from value: JSONValue) -> [ResourceFile] {
+        let root = value["data"] ?? value
+        let files = root["files"]?.arrayValue ?? []
+        return files.compactMap { file in
+            guard let name = file["name"]?.stringValue, !name.isEmpty else { return nil }
+            let rawURL = file["url"]?.stringValue
+            let url = rawURL.flatMap(URL.init(string:))
+            return ResourceFile(
+                name: name,
+                url: url,
+                sha256: file["sha256"]?.stringValue,
+                size: Int64(file["size"]?.stringValue ?? ""),
+                kind: file["kind"]?.stringValue
+            )
         }
     }
 }

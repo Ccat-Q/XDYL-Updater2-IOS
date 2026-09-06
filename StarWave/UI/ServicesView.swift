@@ -101,6 +101,7 @@ private struct RemoteFeatureView: View {
     @EnvironmentObject private var model: AppModel
     let route: FeatureRoute
     @State private var items: [RemoteItem] = []
+    @State private var rankings: [LeaderboardEntry] = []
     @State private var isLoading = false
     @State private var showingCompose = false
     @State private var composeText = ""
@@ -109,19 +110,17 @@ private struct RemoteFeatureView: View {
 
     var body: some View {
         Group {
-            if isLoading && items.isEmpty { ProgressView() }
-            else if items.isEmpty {
+            if isLoading && items.isEmpty && rankings.isEmpty { ProgressView() }
+            else if isRanking {
+                rankingList
+            } else if items.isEmpty {
                 ScrollView { EmptyStateView(icon: route.icon, title: "暂无\(route.title)", message: "下拉刷新以重试请求。") }
                     .refreshable { await load() }
             }
             else {
                 List(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        if route.path == "/rank/coins" || route.path == "/rank/playtime" {
-                            RankRow(item: item, metric: route.path == "/rank/coins" ? .coins : .playtime)
-                        } else {
-                            NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
-                        }
+                        NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
                         actionButtons(for: item)
                     }
                     .padding(.vertical, 4)
@@ -161,6 +160,22 @@ private struct RemoteFeatureView: View {
         .task { await load() }
     }
 
+    private var isRanking: Bool { route.path == "/rank/coins" || route.path == "/rank/playtime" }
+
+    @ViewBuilder private var rankingList: some View {
+        if rankings.isEmpty {
+            ScrollView { EmptyStateView(icon: route.icon, title: "暂无\(route.title)", message: "下拉刷新以重试请求。") }
+                .refreshable { await load() }
+        } else {
+            List(rankings) { entry in
+                RankRow(entry: entry, metric: route.path == "/rank/coins" ? .coins : .playtime)
+                    .padding(.vertical, 4)
+            }
+            .listStyle(.insetGrouped)
+            .refreshable { await load() }
+        }
+    }
+
     @ViewBuilder private func actionButtons(for item: RemoteItem) -> some View {
         if route.title == "任务" {
             Button("领取奖励") { post("/tasks/\(item.id)/claim", fields: [:]) }.buttonStyle(.bordered)
@@ -181,8 +196,14 @@ private struct RemoteFeatureView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            items = try await model.api.values(path: route.path)
-            if route.title == "通知" { try? await model.api.markNotificationsRead(); await model.refreshUnreadCount() }
+            let value = try await model.api.value(path: route.path)
+            if isRanking {
+                rankings = LeaderboardEntry.list(from: value)
+                items = []
+            } else {
+                items = RemoteItem.list(from: value)
+            }
+            if route.title == "通知" { try? await model.markAllNotificationsRead() }
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -218,19 +239,48 @@ private struct RemoteFeatureView: View {
     }
 }
 
+struct LeaderboardEntry: Identifiable {
+    let rank: Int
+    let name: String
+    let username: String?
+    let avatarURL: URL?
+    let coins: Int?
+    let seconds: Int?
+
+    var id: String { "\(rank)-\(username ?? name)" }
+
+    static func list(from value: JSONValue) -> [LeaderboardEntry] {
+        let source = (value["data"] ?? value).arrayValue
+        return source.enumerated().compactMap { index, entry in
+            let name = entry["nickname"]?.stringValue ?? entry["player_name"]?.stringValue ?? entry["username"]?.stringValue
+            guard let name, !name.isEmpty else { return nil }
+            let rank = Int(entry["rank"]?.stringValue ?? "") ?? index + 1
+            return LeaderboardEntry(
+                rank: rank,
+                name: name,
+                username: entry["username"]?.stringValue,
+                avatarURL: AppEnvironment.avatarURL(from: entry["avatar"]?.stringValue),
+                coins: Int(entry["coins"]?.stringValue ?? ""),
+                seconds: Int(entry["seconds"]?.stringValue ?? "")
+            )
+        }
+        .sorted { $0.rank < $1.rank }
+    }
+}
+
 private struct RankRow: View {
     enum Metric { case coins, playtime }
-    let item: RemoteItem
+    let entry: LeaderboardEntry
     let metric: Metric
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("#\(item.raw["rank"]?.stringValue ?? "-")").font(.title3.bold()).foregroundStyle(.secondary).frame(width: 38)
-            AsyncImage(url: AppEnvironment.avatarURL(from: item.raw["avatar"]?.stringValue)) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "person.crop.circle.fill").foregroundStyle(.secondary) }
+            Text("#\(entry.rank)").font(.title3.bold()).foregroundStyle(.secondary).frame(width: 38)
+            AsyncImage(url: entry.avatarURL) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "person.crop.circle.fill").foregroundStyle(.secondary) }
                 .frame(width: 38, height: 38).clipShape(Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).font(.subheadline.weight(.semibold))
-                if let username = item.raw["username"]?.stringValue, username != item.title { Text("@\(username)").font(.caption).foregroundStyle(.secondary) }
+                Text(entry.name).font(.subheadline.weight(.semibold))
+                if let username = entry.username, username != entry.name { Text("@\(username)").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
             Text(metricValue).font(.subheadline.weight(.semibold)).multilineTextAlignment(.trailing)
@@ -239,9 +289,9 @@ private struct RankRow: View {
 
     private var metricValue: String {
         switch metric {
-        case .coins: return "\(item.raw["coins"]?.stringValue ?? "0") 喵币"
+        case .coins: return "\(entry.coins ?? 0) 喵币"
         case .playtime:
-            let seconds = Int(item.raw["seconds"]?.stringValue ?? "0") ?? 0
+            let seconds = entry.seconds ?? 0
             return "\(seconds / 3600) 小时 \((seconds % 3600) / 60) 分"
         }
     }

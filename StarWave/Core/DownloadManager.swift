@@ -114,6 +114,34 @@ final class DownloadManager: NSObject, ObservableObject {
         return documentsDirectory.appendingPathComponent(alternate)
     }
 
+    /// Copy a URLSession temporary file in bounded chunks.  `copyItem` can fail
+    /// for files delivered by a background session even though both URLs are
+    /// valid, producing the unhelpful Cocoa “Cannot create file” message.
+    private func storeDownloadedFile(from source: URL, as filename: String) throws -> URL {
+        try FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
+        let destination = uniqueDestination(for: filename)
+        let staging = documentsDirectory.appendingPathComponent(".\(UUID().uuidString).partial")
+        FileManager.default.createFile(atPath: staging.path, contents: nil)
+
+        do {
+            let input = try FileHandle(forReadingFrom: source)
+            let output = try FileHandle(forWritingTo: staging)
+            defer {
+                try? input.close()
+                try? output.close()
+            }
+            while let chunk = try input.read(upToCount: 1_048_576), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+            try output.synchronize()
+            try FileManager.default.moveItem(at: staging, to: destination)
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
+    }
+
     private func sha256(at url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -151,14 +179,10 @@ extension DownloadManager: URLSessionDownloadDelegate {
         guard let record = record(for: downloadTask) else { return }
         update(record.id) { $0.state = .verifying }
         do {
-            let destination = uniqueDestination(for: record.filename)
-            try FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
             if let expected = record.expectedSHA256, !expected.isEmpty {
                 guard try sha256(at: location).lowercased() == expected else { throw AppError.hashMismatch }
             }
-            // Background download locations can live on a different volume. Copying
-            // first avoids the intermittent Cocoa “Cannot create file” move error.
-            try FileManager.default.copyItem(at: location, to: destination)
+            let destination = try storeDownloadedFile(from: location, as: record.filename)
             try? FileManager.default.removeItem(at: location)
             update(record.id) {
                 $0.state = .completed

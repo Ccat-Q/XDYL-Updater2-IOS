@@ -57,6 +57,13 @@ final class AppModel: ObservableObject {
         catch { /* Notification pages remain available if the badge endpoint differs. */ }
     }
 
+    func markAllNotificationsRead() async throws {
+        try await api.markNotificationsRead()
+        // Reflect a successful server acknowledgement immediately instead of
+        // leaving a stale tab badge visible until the next app launch.
+        unreadCount = 0
+    }
+
     func logout() {
         sessionStore.clear()
         profile = nil

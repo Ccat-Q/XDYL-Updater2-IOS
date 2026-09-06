@@ -77,4 +77,24 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(TitleColor.removingTokens(from: title), "赤青")
         XCTAssertEqual(TitleColor.visibleCharacterCount(in: title), 2)
     }
+
+    func testResourceManifestUsesOnlyFileEntriesAndKeepsDownloadMetadata() throws {
+        let json = #"{"code":200,"data":{"files":[{"name":"mod.jar","url":"http://api.lanternwaves.fun:5551/mods/mod.jar","sha256":"abc","size":1024,"kind":"mod"}]}}"#
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let resource = try XCTUnwrap(ResourceFile.list(from: value).first)
+        XCTAssertEqual(resource.name, "mod.jar")
+        XCTAssertEqual(resource.url?.absoluteString, "http://api.lanternwaves.fun:5551/mods/mod.jar")
+        XCTAssertEqual(resource.sha256, "abc")
+        XCTAssertEqual(resource.size, 1024)
+    }
+
+    func testLeaderboardUsesTheFeatureSpecificNamesAndServerRanks() throws {
+        let json = #"{"data":[{"rank":2,"nickname":"猫","username":"cat","coins":12},{"rank":1,"player_name":"玩家","seconds":3600}]}"#
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let ranks = LeaderboardEntry.list(from: value)
+        XCTAssertEqual(ranks.map(\.rank), [1, 2])
+        XCTAssertEqual(ranks[0].name, "玩家")
+        XCTAssertEqual(ranks[1].name, "猫")
+        XCTAssertEqual(ranks[1].coins, 12)
+    }
 }
