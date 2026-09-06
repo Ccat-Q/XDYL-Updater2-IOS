@@ -211,9 +211,14 @@ private struct ForumPostView: View {
     private func action(_ path: String, successMessage: String? = nil) {
         Task {
             do {
-                _ = try await model.api.post(path: path, fields: [:])
+                let response = try await model.api.post(path: path, fields: [:])
                 await load()
-                actionMessage = successMessage
+                let source = response["data"] ?? response
+                if source["liked"]?.boolValue == false || source["is_liked"]?.boolValue == false {
+                    actionMessage = "已取消点赞"
+                } else {
+                    actionMessage = successMessage
+                }
             }
             catch { model.errorMessage = error.localizedDescription }
         }

@@ -143,18 +143,40 @@ struct StyledTitleText: View {
     }
 
     var body: some View {
-        let parsed = TitleColor.parse(value)
-        Text(parsed.text)
-            .foregroundStyle(TitleColor.color(from: colorHint) ?? parsed.color ?? .primary)
+        TitleColor.segments(in: value, fallback: TitleColor.color(from: colorHint))
+            .reduce(Text("")) { partial, segment in
+                partial + Text(segment.text).foregroundColor(segment.color)
+            }
     }
 }
 
 private enum TitleColor {
-    static func parse(_ value: String) -> (text: String, color: Color?) {
-        guard value.hasPrefix("&#"), value.count >= 8 else { return (value, nil) }
-        let hex = String(value.dropFirst(2).prefix(6))
-        guard let color = color(from: hex) else { return (value, nil) }
-        return (String(value.dropFirst(8)), color)
+    struct Segment {
+        let text: String
+        let color: Color
+    }
+
+    static func segments(in value: String, fallback: Color?) -> [Segment] {
+        let defaultColor = fallback ?? .primary
+        guard let expression = try? NSRegularExpression(pattern: #"&#([0-9A-Fa-f]{6})"#) else {
+            return [Segment(text: value, color: defaultColor)]
+        }
+        let matches = expression.matches(in: value, range: NSRange(value.startIndex..., in: value))
+        guard !matches.isEmpty else { return [Segment(text: value, color: defaultColor)] }
+
+        var result: [Segment] = []
+        var cursor = value.startIndex
+        var activeColor = defaultColor
+        for match in matches {
+            guard let tokenRange = Range(match.range, in: value), let hexRange = Range(match.range(at: 1), in: value) else { continue }
+            let text = String(value[cursor..<tokenRange.lowerBound])
+            if !text.isEmpty { result.append(Segment(text: text, color: activeColor)) }
+            activeColor = color(from: String(value[hexRange])) ?? activeColor
+            cursor = tokenRange.upperBound
+        }
+        let trailing = String(value[cursor...])
+        if !trailing.isEmpty { result.append(Segment(text: trailing, color: activeColor)) }
+        return result.isEmpty ? [Segment(text: value, color: defaultColor)] : result
     }
 
     static func color(from value: String?) -> Color? {

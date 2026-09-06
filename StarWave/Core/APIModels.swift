@@ -124,7 +124,7 @@ struct RemoteItem: Identifiable, Hashable {
         let hours = first(["hours", "required_hours"])
         let requiredSeconds = first(["required_seconds"])
         let derivedRewardTitle = hours.map { "\($0) 小时奖励" } ?? requiredSeconds.map { "累计 \($0) 秒奖励" }
-        title = first(["title", "name", "nickname", "player_name", "item_name", "reward_name"])
+        title = first(["title", "name", "task_name", "nickname", "player_name", "item_name", "reward_name"])
             ?? derivedRewardTitle
             ?? first(["season_name", "label", "type", "username", "content"])
             ?? "项目 \(index + 1)"

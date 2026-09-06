@@ -258,7 +258,34 @@ private struct ChangePasswordView: View {
 }
 
 private struct NotificationsView: View {
-    var body: some View { RemoteStandaloneList(title: "通知", icon: "bell", path: "/notifications") }
+    @EnvironmentObject private var model: AppModel
+    @State private var items: [RemoteItem] = []
+    @State private var loading = false
+
+    var body: some View {
+        Group {
+            if loading && items.isEmpty { ProgressView() }
+            else if items.isEmpty { ScrollView { EmptyStateView(icon: "bell", title: "暂无通知", message: "下拉刷新") }.refreshable { await loadAndMarkRead() } }
+            else {
+                List(items) { item in
+                    NavigationLink { RemoteItemDetailView(title: "通知", item: item) } label: { RemoteItemRow(item: item) }
+                }
+                .refreshable { await loadAndMarkRead() }
+            }
+        }
+        .navigationTitle("通知")
+        .task { await loadAndMarkRead() }
+    }
+
+    private func loadAndMarkRead() async {
+        loading = true
+        defer { loading = false }
+        do {
+            items = try await model.api.values(path: "/notifications")
+            try await model.api.markNotificationsRead()
+            await model.refreshUnreadCount()
+        } catch { model.errorMessage = error.localizedDescription }
+    }
 }
 
 struct RemoteStandaloneList: View {

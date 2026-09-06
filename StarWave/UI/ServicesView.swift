@@ -9,7 +9,88 @@ struct ServicesView: View {
             }
         }
         .navigationTitle("服务")
-        .navigationDestination(for: FeatureRoute.self) { route in RemoteFeatureView(route: route) }
+        .navigationDestination(for: FeatureRoute.self) { route in
+            if route.title == "任务" { TaskFeatureView() }
+            else { RemoteFeatureView(route: route) }
+        }
+    }
+}
+
+private struct TaskFeatureView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var daily: [RemoteItem] = []
+    @State private var achievements: [RemoteItem] = []
+    @State private var isLoading = false
+
+    var body: some View {
+        Group {
+            if isLoading && daily.isEmpty && achievements.isEmpty { ProgressView() }
+            else if daily.isEmpty && achievements.isEmpty {
+                ScrollView { EmptyStateView(icon: "checkmark.seal", title: "暂无任务", message: "下拉刷新以重试请求。") }
+                    .refreshable { await load() }
+            } else {
+                List {
+                    if !daily.isEmpty { Section("每日任务") { ForEach(daily) { taskRow($0) } } }
+                    if !achievements.isEmpty { Section("成就") { ForEach(achievements) { taskRow($0) } } }
+                }
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("任务")
+        .task { await load() }
+    }
+
+    private func taskRow(_ item: RemoteItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.title).font(.headline)
+            if !item.subtitle.isEmpty { Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }
+            Text("奖励：\(rewardText(for: item))").font(.subheadline).foregroundStyle(.orange)
+            Button("领取奖励") { claim(item) }.buttonStyle(.bordered)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func rewardText(for item: RemoteItem) -> String {
+        let raw = item.raw
+        let text = raw["reward"]?.stringValue ?? raw["reward_name"]?.stringValue ?? raw["reward_text"]?.stringValue
+        if let text, !text.isEmpty { return text }
+        var parts: [String] = []
+        if let coins = raw["reward_coins"]?.stringValue ?? raw["coins"]?.stringValue { parts.append("\(coins) 喵币") }
+        if let points = raw["points"]?.stringValue ?? raw["reward_points"]?.stringValue { parts.append("\(points) 点数") }
+        if let experience = raw["exp"]?.stringValue ?? raw["reward_exp"]?.stringValue { parts.append("\(experience) 经验") }
+        return parts.isEmpty ? "以服务器结算为准" : parts.joined(separator: " · ")
+    }
+
+    private func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let value = try await model.api.value(path: "/tasks")
+            let source = value["data"] ?? value
+            daily = firstList(in: source, keys: ["daily", "daily_tasks", "dailies"])
+            achievements = firstList(in: source, keys: ["achievements", "achievement_tasks", "achievement"])
+            if daily.isEmpty && achievements.isEmpty {
+                let all = RemoteItem.list(from: source)
+                daily = all.filter { ($0.raw["type"]?.stringValue ?? $0.raw["task_type"]?.stringValue ?? "").lowercased().contains("daily") }
+                achievements = all.filter { ($0.raw["type"]?.stringValue ?? $0.raw["task_type"]?.stringValue ?? "").lowercased().contains("achievement") }
+                if daily.isEmpty && achievements.isEmpty { daily = all }
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func firstList(in source: JSONValue, keys: [String]) -> [RemoteItem] {
+        for key in keys where source[key] != nil {
+            let items = RemoteItem.list(from: source[key]!)
+            if !items.isEmpty { return items }
+        }
+        return []
+    }
+
+    private func claim(_ item: RemoteItem) {
+        Task {
+            do { _ = try await model.api.post(path: "/tasks/\(item.id)/claim", fields: [:]); await load() }
+            catch { model.errorMessage = error.localizedDescription }
+        }
     }
 }
 

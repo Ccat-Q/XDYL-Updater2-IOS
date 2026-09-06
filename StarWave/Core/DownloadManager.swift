@@ -100,8 +100,9 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func sanitized(_ filename: String) -> String {
+        let leaf = URL(fileURLWithPath: filename).lastPathComponent
         let invalid = CharacterSet(charactersIn: "/\\:?%*|\"<>")
-        return filename.components(separatedBy: invalid).joined(separator: "-")
+        return leaf.components(separatedBy: invalid).joined(separator: "-")
     }
 
     private func uniqueDestination(for filename: String) -> URL {
@@ -155,7 +156,10 @@ extension DownloadManager: URLSessionDownloadDelegate {
             if let expected = record.expectedSHA256, !expected.isEmpty {
                 guard try sha256(at: location).lowercased() == expected else { throw AppError.hashMismatch }
             }
-            try FileManager.default.moveItem(at: location, to: destination)
+            // Background download locations can live on a different volume. Copying
+            // first avoids the intermittent Cocoa “Cannot create file” move error.
+            try FileManager.default.copyItem(at: location, to: destination)
+            try? FileManager.default.removeItem(at: location)
             update(record.id) {
                 $0.state = .completed
                 $0.progress = 1
@@ -165,7 +169,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         } catch {
             update(record.id) {
                 $0.state = .failed
-                $0.message = error.localizedDescription
+                $0.message = "无法保存 \(record.filename)：\(error.localizedDescription)"
             }
         }
         persist()

@@ -73,7 +73,7 @@ struct DownloadsView: View {
             if let url = firstURL(in: item.raw) {
                 Button {
                     let hash = item.raw["sha256"]?.stringValue ?? item.raw["hash"]?.stringValue
-                    manager.enqueue(url: url, filename: item.raw["filename"]?.stringValue ?? url.lastPathComponent, expectedSHA256: hash)
+                    manager.enqueue(url: url, filename: item.raw["name"]?.stringValue ?? item.raw["filename"]?.stringValue ?? url.lastPathComponent, expectedSHA256: hash)
                     selection = 1
                 } label: {
                     Label("下载到“文件”App", systemImage: "arrow.down.circle")
@@ -104,13 +104,11 @@ struct DownloadsView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let packLinks = try await model.api.values(path: "/update/pack-links")
-            let mods = (try? await model.api.values(path: "/mods/list")) ?? []
-            resources = packLinks + mods
-            if resources.isEmpty {
-                let fallback = try await model.api.value(path: "/mods.json", requiresAuthentication: false, baseURL: AppEnvironment.modsBaseURL)
-                resources = RemoteItem.list(from: fallback)
-            }
+            // The public manifest is authoritative: it contains individual files,
+            // names, SHA-256 values and direct download URLs. `/mods/list` returns
+            // grouping data and must not be treated as downloadable files.
+            let manifest = try await model.api.value(path: "/mods.json", requiresAuthentication: false, baseURL: AppEnvironment.modsBaseURL)
+            resources = RemoteItem.list(from: manifest)
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -124,4 +122,3 @@ struct DownloadsView: View {
         }
     }
 }
-
