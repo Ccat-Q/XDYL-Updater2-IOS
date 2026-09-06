@@ -55,6 +55,7 @@ struct ProfileView: View {
                 Button("退出登录", role: .destructive) { model.logout() }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("我的")
         .refreshable { await model.refreshProfile() }
         .sheet(isPresented: $showingEdit) { EditProfileView() }
@@ -133,11 +134,13 @@ private struct DiagnosticsView: View {
                 Text("最多保留 300 条。日志不含密码、令牌和请求正文。")
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("网络日志")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if !diagnostics.entries.isEmpty {
                     ShareLink(item: diagnostics.logURL) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel("分享网络日志")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -270,6 +273,7 @@ private struct NotificationsView: View {
                 List(items) { item in
                     NavigationLink { RemoteItemDetailView(title: "通知", item: item) } label: { RemoteItemRow(item: item) }
                 }
+                .listStyle(.insetGrouped)
                 .refreshable { await loadAndMarkRead() }
             }
         }
@@ -307,6 +311,7 @@ struct RemoteStandaloneList: View {
                 List(items) { item in
                     NavigationLink { RemoteItemDetailView(title: title, item: item) } label: { RemoteItemRow(item: item) }
                 }
+                .listStyle(.insetGrouped)
                 .refreshable { await load() }
             }
         }

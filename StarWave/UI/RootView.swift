@@ -33,6 +33,7 @@ private struct MainTabView: View {
                 .badge(model.unreadCount)
         }
         .tint(.accentColor)
+        .appTabBarMinimization()
     }
 }
 
@@ -43,7 +44,10 @@ struct LoadingOverlay: ViewModifier {
             if visible {
                 ZStack {
                     Color.black.opacity(0.08).ignoresSafeArea()
-                    ProgressView().padding(22).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    ProgressView()
+                        .controlSize(.large)
+                        .padding(22)
+                        .appFunctionalSurface(cornerRadius: 18)
                 }
             }
         }
@@ -67,6 +71,6 @@ struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(32)
+        .accessibilityElement(children: .combine)
     }
 }
-

@@ -18,6 +18,7 @@ struct DownloadsView: View {
             if selection == 0 { catalog }
             else { downloads }
         }
+        .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("资源")
         .task { if resources.isEmpty { await load() } }
     }
@@ -29,7 +30,7 @@ struct DownloadsView: View {
                 EmptyStateView(icon: "shippingbox", title: "没有找到资源", message: "请检查旧模组接口，或下拉重新加载。")
             } else {
                 List(resources) { item in resourceRow(item) }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
                     .refreshable { await load() }
             }
         }
@@ -63,6 +64,7 @@ struct DownloadsView: View {
                         .padding(.vertical, 4)
                     }
                 }
+                .listStyle(.insetGrouped)
             }
         }
     }

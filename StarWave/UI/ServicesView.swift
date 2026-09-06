@@ -8,6 +8,7 @@ struct ServicesView: View {
                 Label(route.title, systemImage: route.icon)
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("服务")
         .navigationDestination(for: FeatureRoute.self) { route in
             if route.title == "任务" { TaskFeatureView() }
@@ -33,6 +34,7 @@ private struct TaskFeatureView: View {
                     if !daily.isEmpty { Section("每日任务") { ForEach(daily) { taskRow($0) } } }
                     if !achievements.isEmpty { Section("成就") { ForEach(achievements) { taskRow($0) } } }
                 }
+                .listStyle(.insetGrouped)
                 .refreshable { await load() }
             }
         }
@@ -123,6 +125,7 @@ private struct RemoteFeatureView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .listStyle(.insetGrouped)
                 .refreshable { await load() }
             }
         }
@@ -130,10 +133,13 @@ private struct RemoteFeatureView: View {
         .toolbar {
             if route.title == "意见箱" {
                 Button { showingCompose = true } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("提交意见")
             } else if route.title == "YSM 皮肤" {
                 Button { showingFileImporter = true } label: { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("上传 YSM 皮肤")
             } else if route.title == "称号目录" {
                 Button { showingCustomTitle = true } label: { Image(systemName: "plus.rectangle.on.rectangle") }
+                    .accessibilityLabel("自定义称号")
             }
         }
         .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.data]) { result in

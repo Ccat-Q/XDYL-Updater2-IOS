@@ -22,6 +22,7 @@ struct CommunityView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(post.title).font(.headline).lineLimit(2)
                             if !post.subtitle.isEmpty { Text(post.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+                            ItemImagesView(item: post, height: 150)
                             HStack {
                                 if let author = post.raw["author"]?.stringValue ?? post.raw["username"]?.stringValue { Label(author, systemImage: "person") }
                                 Spacer()
@@ -41,6 +42,7 @@ struct CommunityView: View {
             ToolbarItem(placement: .navigationBarLeading) { categoryMenu }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button { showingCompose = true } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("发布帖子")
             }
         }
         .sheet(isPresented: $showingCompose) { ComposePostView(categories: categories) { await load() } }

@@ -12,9 +12,12 @@ struct AuthView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 28) {
                     VStack(spacing: 12) {
-                        Image(systemName: "sparkles").font(.system(size: 54)).foregroundStyle(.yellow)
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 50, weight: .medium))
+                            .foregroundStyle(.tint)
+                            .accessibilityHidden(true)
                         Text("星灯云浪").font(.largeTitle.bold())
                         Text("Minecraft 社区伴侣").foregroundStyle(.secondary)
                     }
@@ -54,7 +57,7 @@ struct AuthView: View {
                         .font(.subheadline)
                     }
                     .padding(20)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                    .appSurfaceCard(cornerRadius: 22)
 
                     Text("旧服务的部分接口使用 HTTP。继续登录表示你已了解公共网络中的明文传输风险。")
                         .font(.footnote)
@@ -63,6 +66,9 @@ struct AuthView: View {
                 }
                 .padding()
             }
+            .appContentBackground()
+            .navigationTitle("登录")
+            .navigationBarTitleDisplayMode(.inline)
             .loading(model.isBusy)
             .sheet(item: $accountFlow) { flow in AccountFlowView(flow: flow) }
         }

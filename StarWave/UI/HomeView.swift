@@ -28,6 +28,7 @@ struct HomeView: View {
             }
             .padding()
         }
+        .appContentBackground()
         .navigationTitle("星灯云浪")
         .refreshable { await load() }
         .task { if announcements.isEmpty { await load() } }
@@ -36,7 +37,8 @@ struct HomeView: View {
 
     private var welcomeCard: some View {
         HStack(spacing: 14) {
-            Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.yellow)
+            Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.tint)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("你好，\(model.profile?.nickname ?? model.sessionStore.username ?? "玩家")").font(.title3.bold())
                 Text("在手机上浏览社区、管理资源与下载包").font(.subheadline).foregroundStyle(.secondary)
@@ -44,7 +46,7 @@ struct HomeView: View {
             Spacer()
         }
         .padding()
-        .background(LinearGradient(colors: [.blue.opacity(0.24), .purple.opacity(0.16)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 18))
+        .appSurfaceCard(cornerRadius: 20)
     }
 
     @ViewBuilder private func releaseCard(_ release: GitHubRelease) -> some View {
@@ -85,7 +87,7 @@ struct SectionCard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .appSurfaceCard()
     }
 }
 
