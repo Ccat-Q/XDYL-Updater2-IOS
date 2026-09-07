@@ -319,7 +319,16 @@ private struct DeveloperPerformanceView: View {
             }
             Section("采样") {
                 Toggle("持续采样", isOn: $continuousSampling)
-                Button("立即采样") { monitor.sample() }
+                Button { monitor.sample() } label: {
+                    Label("立即采样", systemImage: "arrow.clockwise")
+                }
+                if let lastSampleDate {
+                    LabeledContent("上次采样", value: lastSampleDate.formatted(date: .omitted, time: .standard))
+                    Text("本次打开已采样 \(monitor.sampleCount) 次，数据已保存到性能记录。")
+                        .font(.caption).foregroundStyle(.green)
+                } else {
+                    Text("尚未取得设备快照。") .font(.caption).foregroundStyle(.secondary)
+                }
                 Text("默认只在本页每 2 秒采样；持续采样开启后，在 App 前台持续记录。") .font(.caption).foregroundStyle(.secondary)
             }
         }

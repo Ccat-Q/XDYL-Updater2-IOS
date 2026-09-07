@@ -121,4 +121,12 @@ final class APIModelsTests: XCTestCase {
         XCTAssertTrue(routes.contains { $0.path == "/notifications/read" && $0.method == .post })
         XCTAssertTrue(routes.contains { $0.baseURL == AppEnvironment.modsBaseURL.absoluteString })
     }
+
+    @MainActor func testImmediatePerformanceSamplePublishesTimestampAndCount() {
+        let monitor = PerformanceMonitor.shared
+        let before = monitor.sampleCount
+        monitor.sample()
+        XCTAssertEqual(monitor.sampleCount, before + 1)
+        XCTAssertNotNil(monitor.lastSampleDate)
+    }
 }

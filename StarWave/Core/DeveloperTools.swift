@@ -316,6 +316,8 @@ final class DeveloperRequestExecutor {
 final class PerformanceMonitor: ObservableObject {
     static let shared = PerformanceMonitor()
     @Published private(set) var current: PerformanceSnapshot?
+    @Published private(set) var lastSampleDate: Date?
+    @Published private(set) var sampleCount = 0
     private var timer: Timer?
 
     private init() { UIDevice.current.isBatteryMonitoringEnabled = true }
@@ -342,6 +344,8 @@ final class PerformanceMonitor: ObservableObject {
             availableDiskBytes: disk, physicalMemoryBytes: process.physicalMemory, processorCount: process.activeProcessorCount
         )
         current = snapshot
+        lastSampleDate = snapshot.date
+        sampleCount += 1
         DeveloperToolsStore.shared.append(snapshot)
     }
 }
