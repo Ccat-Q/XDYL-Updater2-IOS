@@ -112,4 +112,13 @@ final class APIModelsTests: XCTestCase {
         XCTAssertTrue(DeveloperHTTPMethod.put.changesServerState)
         XCTAssertTrue(DeveloperHTTPMethod.delete.changesServerState)
     }
+
+    func testDeveloperCatalogContainsAllKnownRouteGroupsWithUniqueMethods() {
+        let routes = DeveloperKnownRoute.catalog
+        XCTAssertGreaterThan(routes.count, 50)
+        XCTAssertEqual(Set(routes.map(\.id)).count, routes.count)
+        XCTAssertTrue(routes.contains { $0.path == "/upload_v2" || $0.path == "/upload/image" })
+        XCTAssertTrue(routes.contains { $0.path == "/notifications/read" && $0.method == .post })
+        XCTAssertTrue(routes.contains { $0.baseURL == AppEnvironment.modsBaseURL.absoluteString })
+    }
 }

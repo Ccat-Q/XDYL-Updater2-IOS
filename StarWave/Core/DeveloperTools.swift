@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import UIKit
 
-enum DeveloperHTTPMethod: String, CaseIterable, Codable, Identifiable {
+enum DeveloperHTTPMethod: String, CaseIterable, Codable, Identifiable, Hashable {
     case get = "GET", post = "POST", put = "PUT", delete = "DELETE"
     var id: String { rawValue }
     var changesServerState: Bool { self != .get }
@@ -25,6 +25,56 @@ struct DeveloperRequestDraft: Equatable {
     var jsonBody = "{}"
     var useAuthentication = false
     var uploadField = "file"
+}
+
+struct DeveloperKnownRoute: Identifiable, Hashable {
+    let group: String
+    let title: String
+    let path: String
+    let method: DeveloperHTTPMethod
+    let requiresAuthentication: Bool
+    let baseURL: String
+    let defaultQuery: String
+
+    init(_ group: String, _ title: String, _ path: String, _ method: DeveloperHTTPMethod = .get, authenticated: Bool = true, baseURL: String = AppEnvironment.apiBaseURL.absoluteString, query: String = "") {
+        self.group = group; self.title = title; self.path = path; self.method = method
+        requiresAuthentication = authenticated; self.baseURL = baseURL; defaultQuery = query
+    }
+
+    var id: String { "\(method.rawValue) \(baseURL)\(path)" }
+
+    static let catalog: [DeveloperKnownRoute] = [
+        .init("认证", "登录", "/login", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "刷新令牌", "/refresh", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "注册", "/register", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "忘记密码", "/forgot-password", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "重置密码", "/reset-password", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "发送验证码", "/send-verify-code", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "QQ 登录", "/qq-login", authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("认证", "检查 QQ 登录", "/check-qq-login", authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString, query: "session_id="),
+        .init("认证", "通知登录", "/notify-login", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
+        .init("用户", "个人资料", "/user/profile"), .init("用户", "更新资料", "/user/profile", .post),
+        .init("用户", "上传头像", "/user/avatar", .post), .init("用户", "修改密码", "/user/password", .post),
+        .init("用户", "修改用户名", "/user/change-username", .post), .init("用户", "绑定 QQ", "/user/bind-qq", .post),
+        .init("用户", "解绑 QQ", "/user/unbind-qq", .post), .init("用户", "我的物品", "/user/items"), .init("用户", "表情", "/user/emojis"), .init("用户", "上传 YSM 皮肤", "/upload_v2", .post),
+        .init("社区", "论坛分类", "/forum/categories"), .init("社区", "帖子列表", "/forum/posts", query: "page=1"),
+        .init("社区", "发布帖子", "/forum/post", .post), .init("社区", "帖子详情", "/forum/post/{id}"),
+        .init("社区", "回复帖子", "/forum/post/{id}/reply", .post), .init("社区", "点赞帖子", "/forum/post/{id}/like", .post),
+        .init("社区", "打赏帖子", "/forum/post/{id}/tip", .post), .init("社区", "上传图片", "/upload/image", .post),
+        .init("游戏", "周目", "/seasons"), .init("游戏", "在线玩家", "/server/players"), .init("游戏", "喵币排行", "/rank/coins"),
+        .init("游戏", "在线排行", "/rank/playtime"), .init("游戏", "游戏奖励", "/playtime/rewards"),
+        .init("游戏", "领取游戏奖励", "/playtime/rewards/claim", .post), .init("游戏", "任务", "/tasks"),
+        .init("游戏", "领取任务", "/tasks/{id}/claim", .post), .init("游戏", "投票列表", "/polls"), .init("游戏", "投票", "/vote", .post),
+        .init("商城", "商城物品", "/shop/items"), .init("商城", "购买商品", "/shop/buy", .post),
+        .init("商城", "称号目录", "/titles/catalog"), .init("商城", "我的称号", "/titles/mine"),
+        .init("商城", "购买称号", "/titles/buy", .post), .init("商城", "佩戴称号", "/titles/wear", .post),
+        .init("商城", "兑换比例", "/redeem/rate"), .init("商城", "兑换游戏币", "/redeem/game-coins", .post),
+        .init("内容", "公告", "/announcements"), .init("内容", "通知", "/notifications"), .init("内容", "未读通知数", "/notifications/unread"),
+        .init("内容", "全部通知已读", "/notifications/read", .post), .init("内容", "意见箱", "/suggestions"),
+        .init("内容", "提交意见", "/suggestions", .post), .init("内容", "纪念堂", "/memorials"),
+        .init("更新", "最新更新", "/update/latest"), .init("更新", "整合包链接", "/update/pack-links"), .init("更新", "模组列表", "/mods/list"),
+        .init("资源", "公开模组清单", "/mods.json", authenticated: false, baseURL: AppEnvironment.modsBaseURL.absoluteString)
+    ]
 }
 
 struct DeveloperSession: Codable, Identifiable, Equatable {

@@ -11,8 +11,11 @@ struct DeveloperToolsView: View {
                 NavigationLink { DeveloperRequestConsoleView() } label: { Label("请求控制台", systemImage: "terminal") }
                 NavigationLink { DeveloperRouteCatalogView() } label: { Label("接口目录", systemImage: "list.bullet.rectangle") }
                 NavigationLink { DeveloperSessionsView() } label: {
-                    Label("最近请求与响应", systemImage: "clock.arrow.circlepath")
-                    Spacer(); Text("\(store.sessions.count)").foregroundStyle(.secondary)
+                    HStack {
+                        Label("最近请求与响应", systemImage: "clock.arrow.circlepath")
+                        Spacer()
+                        Text("\(store.sessions.count)").foregroundStyle(.secondary)
+                    }
                 }
             }
             Section("运行状态") {
@@ -39,7 +42,7 @@ struct DeveloperToolsView: View {
 private struct DeveloperRequestConsoleView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject private var store = DeveloperToolsStore.shared
-    @State private var draft = DeveloperRequestDraft()
+    @State private var draft: DeveloperRequestDraft
     @State private var uploadURL: URL?
     @State private var showingImporter = false
     @State private var showingMutationConfirmation = false
@@ -48,6 +51,19 @@ private struct DeveloperRequestConsoleView: View {
     @State private var isSending = false
     @State private var saveName = ""
     @State private var showingSaveEnvironment = false
+
+    init(route: DeveloperKnownRoute? = nil) {
+        var initial = DeveloperRequestDraft()
+        if let route {
+            initial.customBaseURL = route.baseURL
+            initial.path = route.path
+            initial.method = route.method
+            initial.useAuthentication = route.requiresAuthentication
+            initial.query = route.defaultQuery
+            initial.jsonBody = "{}"
+        }
+        _draft = State(initialValue: initial)
+    }
 
     var body: some View {
         Form {
@@ -176,26 +192,68 @@ private struct DeveloperResponseView: View {
 }
 
 private struct DeveloperRouteCatalogView: View {
-    private struct Route: Identifiable {
-        let path: String; let method: String; let authenticated: Bool
-        var id: String { path + method }
+    private struct RouteGroup: Identifiable {
+        let group: String
+        let routes: [DeveloperKnownRoute]
+        var id: String { group }
     }
-    private let routes: [Route] = [
-        .init(path: "/user/profile", method: "GET", authenticated: true), .init(path: "/forum/posts?page=1", method: "GET", authenticated: true), .init(path: "/notifications", method: "GET", authenticated: true),
-        .init(path: "/notifications/read", method: "POST", authenticated: true), .init(path: "/rank/coins", method: "GET", authenticated: true), .init(path: "/rank/playtime", method: "GET", authenticated: true),
-        .init(path: "/mods.json", method: "GET", authenticated: false), .init(path: "/upload/image", method: "POST multipart", authenticated: true)
-    ]
+    @EnvironmentObject private var model: AppModel
+    @State private var selectedRoute: DeveloperKnownRoute?
+    @State private var result: DeveloperSession?
+    @State private var isSending = false
+
     var body: some View {
         List {
-            Section {
-                ForEach(routes) { route in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(route.path).font(.system(.body, design: .monospaced))
-                        Text("\(route.method) · \(route.authenticated ? "需要认证" : "匿名")").font(.caption).foregroundStyle(.secondary)
+            ForEach(groupedRoutes) { group in
+                Section(group.group) {
+                    ForEach(group.routes) { route in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(route.title).font(.subheadline.weight(.semibold))
+                            Text(route.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            HStack {
+                                Text("\(route.method.rawValue) · \(route.requiresAuthentication ? "需要认证" : "匿名")").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                NavigationLink("编辑") { DeveloperRequestConsoleView(route: route) }
+                                    .font(.caption).buttonStyle(.bordered)
+                                Button("一键请求") { send(route) }
+                                    .font(.caption).buttonStyle(.borderedProminent).disabled(isSending)
+                            }
+                        }
+                        .padding(.vertical, 3)
                     }
                 }
-            } header: { Text("已知接口") } footer: { Text("目录是快速入口；请求控制台支持任意路径与手动 URL。") }
-        }.navigationTitle("接口目录")
+            }
+        }
+        .navigationTitle("接口目录")
+        .confirmationDialog("确认发送写请求？", isPresented: Binding(get: { selectedRoute?.method.changesServerState == true }, set: { if !$0 { selectedRoute = nil } }), titleVisibility: .visible) {
+            if let route = selectedRoute {
+                Button("发送 \(route.method.rawValue)", role: .destructive) { selectedRoute = nil; execute(route) }
+                Button("取消", role: .cancel) { selectedRoute = nil }
+            }
+        } message: { Text("一键写请求使用空 JSON 对象。需要业务字段、文件或替换 {id} 时，请使用“编辑”。") }
+        .sheet(item: $result) { session in
+            NavigationStack { Form { DeveloperResponseView(session: session) }.navigationTitle("一键请求结果") }
+        }
+    }
+
+    private var groupedRoutes: [RouteGroup] {
+        Dictionary(grouping: DeveloperKnownRoute.catalog, by: \.group)
+            .map { RouteGroup(group: $0.key, routes: $0.value) }
+            .sorted { $0.group < $1.group }
+    }
+
+    private func send(_ route: DeveloperKnownRoute) {
+        if route.method.changesServerState { selectedRoute = route }
+        else { execute(route) }
+    }
+
+    private func execute(_ route: DeveloperKnownRoute) {
+        isSending = true
+        Task {
+            defer { isSending = false }
+            let draft = DeveloperRequestDraft(customBaseURL: route.baseURL, path: route.path, method: route.method, query: route.defaultQuery, jsonBody: "{}", useAuthentication: route.requiresAuthentication)
+            result = await DeveloperRequestExecutor(sessionStore: model.sessionStore).execute(draft: draft, baseURL: route.baseURL)
+        }
     }
 }
 

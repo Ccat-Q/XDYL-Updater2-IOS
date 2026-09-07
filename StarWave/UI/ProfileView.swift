@@ -43,8 +43,11 @@ struct ProfileView: View {
             }
             Section("应用") {
                 NavigationLink { NotificationsView() } label: {
-                    Label("通知", systemImage: "bell")
-                    if model.unreadCount > 0 { Spacer(); Text("\(model.unreadCount)").foregroundStyle(.secondary) }
+                    HStack {
+                        Label("通知", systemImage: "bell")
+                        Spacer()
+                        if model.unreadCount > 0 { Text("\(model.unreadCount)").foregroundStyle(.secondary) }
+                    }
                 }
                 Link(destination: AppEnvironment.repositoryReleasesURL) { Label("检查 IPA 更新", systemImage: "arrow.triangle.2.circlepath") }
                 NavigationLink { SettingsView() } label: { Label("设置", systemImage: "gear") }
