@@ -322,7 +322,7 @@ private struct DeveloperPerformanceView: View {
                 Button { monitor.sample() } label: {
                     Label("立即采样", systemImage: "arrow.clockwise")
                 }
-                if let lastSampleDate {
+                if let lastSampleDate = monitor.lastSampleDate {
                     LabeledContent("上次采样", value: lastSampleDate.formatted(date: .omitted, time: .standard))
                     Text("本次打开已采样 \(monitor.sampleCount) 次，数据已保存到性能记录。")
                         .font(.caption).foregroundStyle(.green)
