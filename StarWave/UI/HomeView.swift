@@ -236,17 +236,63 @@ struct ItemImagesView: View {
 struct RemoteImageView: View {
     let url: URL
     let height: CGFloat
+    @State private var preview: ImagePreview?
 
     var body: some View {
         AsyncImage(url: url, transaction: .init(animation: .easeInOut)) { phase in
             switch phase {
-            case let .success(image): image.resizable().scaledToFit()
+            case let .success(image):
+                Button { preview = ImagePreview(url: url) } label: {
+                    image.resizable().scaledToFit()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("放大查看图片")
             case .failure: Label("图片加载失败", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
             default: ProgressView().frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 44, maxHeight: height)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .fullScreenCover(item: $preview) { preview in
+            ImagePreviewView(url: preview.url)
+        }
+    }
+}
+
+private struct ImagePreview: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+private struct ImagePreviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    let url: URL
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            AsyncImage(url: url, transaction: .init(animation: .easeInOut)) { phase in
+                switch phase {
+                case let .success(image): image.resizable().scaledToFit().padding()
+                case .failure: Label("图片加载失败", systemImage: "exclamationmark.triangle").foregroundStyle(.white)
+                default: ProgressView().tint(.white)
+                }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 30)).foregroundStyle(.white.opacity(0.92))
+            }
+            .padding()
+            .accessibilityLabel("关闭图片预览")
+        }
+        .overlay(alignment: .topTrailing) {
+            ShareLink(item: url) {
+                Image(systemName: "square.and.arrow.up").font(.system(size: 22)).foregroundStyle(.white.opacity(0.92))
+            }
+            .padding()
+            .accessibilityLabel("分享图片链接")
+        }
     }
 }
 
