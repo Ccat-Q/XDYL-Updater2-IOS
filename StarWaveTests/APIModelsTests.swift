@@ -38,6 +38,24 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(detail.replies.first?.detail, "回复正文")
     }
 
+    func testPostImagesSupportMarkdownHTMLAndAttachmentArrays() throws {
+        let text = "正文 ![图](/uploads/markdown.png) <img src=\"https://cdn.example/html.png\">"
+        let value: JSONValue = .object([
+            "content": .string(text),
+            "images": .array([
+                .string("/uploads/array.png"),
+                .object(["url": .string("https://cdn.example/object.png")])
+            ])
+        ])
+        let urls = ContentURLs.images(in: value).map(\.absoluteString)
+        XCTAssertEqual(Set(urls), Set([
+            "https://login.lanternwaves.fun/uploads/markdown.png",
+            "https://cdn.example/html.png",
+            "https://login.lanternwaves.fun/uploads/array.png",
+            "https://cdn.example/object.png"
+        ]))
+    }
+
     func testRelativeAvatarUsesIdentityHost() throws {
         let data = Data(#"{"username":"cat","avatar":"avatar_1.jpg"}"#.utf8)
         let profile = UserProfile(json: try JSONDecoder().decode(JSONValue.self, from: data))

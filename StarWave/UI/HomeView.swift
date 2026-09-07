@@ -224,9 +224,10 @@ struct RichContentView: View {
 struct ItemImagesView: View {
     let item: RemoteItem
     let height: CGFloat
+    var includeContentImages = true
 
     var body: some View {
-        ForEach(ContentURLs.images(in: item.raw), id: \.absoluteString) { url in
+        ForEach(ContentURLs.images(in: item.raw, includeContentImages: includeContentImages), id: \.absoluteString) { url in
             RemoteImageView(url: url, height: height)
         }
     }
@@ -249,12 +250,18 @@ struct RemoteImageView: View {
     }
 }
 
-private enum ContentURLs {
-    static func images(in value: JSONValue) -> [URL] {
+enum ContentURLs {
+    static func images(in value: JSONValue, includeContentImages: Bool = true) -> [URL] {
         let explicit = ["image", "image_url", "cover", "cover_url", "icon"]
             .compactMap { resolve(value[$0]?.stringValue) }
-        let markdown = markdownImages(in: value["content"]?.stringValue ?? "")
-        return Array(Set(explicit + markdown)).sorted { $0.absoluteString < $1.absoluteString }
+        let collections = ["images", "image_urls", "photos", "attachments", "files"]
+            .flatMap { imageURLs(in: value[$0]) }
+        guard includeContentImages else {
+            return Array(Set(explicit + collections)).sorted { $0.absoluteString < $1.absoluteString }
+        }
+        let content = value["content"]?.stringValue ?? value["detail"]?.stringValue ?? ""
+        let embedded = markdownImages(in: content) + htmlImages(in: content)
+        return Array(Set(explicit + collections + embedded)).sorted { $0.absoluteString < $1.absoluteString }
     }
 
     static func markdownImages(in value: String) -> [URL] {
@@ -272,9 +279,27 @@ private enum ContentURLs {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func resolve(_ value: String?) -> URL? {
-        guard let value, !value.isEmpty else { return nil }
-        if let url = URL(string: value), url.scheme != nil { return url }
+    static func htmlImages(in value: String) -> [URL] {
+        guard let expression = try? NSRegularExpression(pattern: #"<img\b[^>]*\bsrc\s*=\s*['\x22]([^'\x22]+)['\x22][^>]*>"#, options: .caseInsensitive) else { return [] }
+        let range = NSRange(value.startIndex..., in: value)
+        return expression.matches(in: value, range: range).compactMap { match in
+            guard let range = Range(match.range(at: 1), in: value) else { return nil }
+            return resolve(String(value[range]))
+        }
+    }
+
+    static func imageURLs(in value: JSONValue?) -> [URL] {
+        guard let value else { return [] }
+        if let direct = resolve(value.stringValue) { return [direct] }
+        if case let .array(values) = value { return values.flatMap { imageURLs(in: $0) } }
+        let keys = ["url", "image", "image_url", "path", "src", "file_url"]
+        return keys.compactMap { resolve(value[$0]?.stringValue) }
+    }
+
+    static func resolve(_ value: String?) -> URL? {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        value = value.replacingOccurrences(of: "&amp;", with: "&")
+        if let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) { return url }
         return URL(string: value, relativeTo: AppEnvironment.webBaseURL)?.absoluteURL
     }
 }

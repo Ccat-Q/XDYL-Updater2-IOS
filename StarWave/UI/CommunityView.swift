@@ -157,7 +157,9 @@ private struct ForumPostView: View {
         List {
             Section {
                 Text(detail?.post.title ?? post.title).font(.title3.bold())
-                Text(detail?.post.detail ?? post.detail)
+                let displayedPost = detail?.post ?? post
+                RichContentView(displayedPost.detail)
+                ItemImagesView(item: displayedPost, height: 280, includeContentImages: false)
             }
             if let replies = detail?.replies, !replies.isEmpty {
                 Section("回复") {
