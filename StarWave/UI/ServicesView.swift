@@ -45,7 +45,7 @@ private struct TaskFeatureView: View {
 
     private func taskRow(_ item: RemoteItem) -> some View {
         let completion = taskCompletion(for: item)
-        VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(item.title).font(.headline)
                 Spacer()
