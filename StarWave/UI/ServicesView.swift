@@ -44,13 +44,34 @@ private struct TaskFeatureView: View {
     }
 
     private func taskRow(_ item: RemoteItem) -> some View {
+        let completion = taskCompletion(for: item)
         VStack(alignment: .leading, spacing: 6) {
-            Text(item.title).font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                Text(item.title).font(.headline)
+                Spacer()
+                Label(completion.title, systemImage: completion.icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(completion.color)
+            }
             if !item.subtitle.isEmpty { Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }
             Text("奖励：\(rewardText(for: item))").font(.subheadline).foregroundStyle(.orange)
-            Button("领取奖励") { claim(item) }.buttonStyle(.bordered)
+            if completion.isClaimed {
+                Text("奖励已领取").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button(completion.isComplete ? "领取奖励" : "尚未完成") { claim(item) }
+                    .buttonStyle(.bordered)
+                    .disabled(!completion.isComplete)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private func taskCompletion(for item: RemoteItem) -> TaskCompletion {
+        let raw = item.raw
+        let status = (raw["status"]?.stringValue ?? "").lowercased()
+        let isClaimed = raw["claimed"]?.boolValue == true || raw["is_claimed"]?.boolValue == true || ["claimed", "已领取"].contains(status)
+        let isComplete = raw["completed"]?.boolValue == true || raw["is_completed"]?.boolValue == true || raw["done"]?.boolValue == true || raw["can_claim"]?.boolValue == true || isClaimed || ["complete", "completed", "done", "finished", "已完成"].contains(status)
+        return TaskCompletion(isComplete: isComplete, isClaimed: isClaimed)
     }
 
     private func rewardText(for item: RemoteItem) -> String {
@@ -95,6 +116,15 @@ private struct TaskFeatureView: View {
             catch { model.errorMessage = error.localizedDescription }
         }
     }
+}
+
+private struct TaskCompletion {
+    let isComplete: Bool
+    let isClaimed: Bool
+
+    var title: String { isClaimed ? "已领取" : (isComplete ? "已完成" : "进行中") }
+    var icon: String { isClaimed ? "checkmark.seal.fill" : (isComplete ? "checkmark.circle.fill" : "circle.dotted") }
+    var color: Color { isClaimed ? .secondary : (isComplete ? .green : .orange) }
 }
 
 private struct RemoteFeatureView: View {
@@ -184,7 +214,9 @@ private struct RemoteFeatureView: View {
         } else if route.title == "投票" {
             Button("投票") { post("/vote", fields: ["poll_id": .string(item.id)]) }.buttonStyle(.bordered)
         } else if route.title == "游戏奖励" {
-            Button("领取") { post("/playtime/rewards/claim", fields: ["reward_id": .string(item.id)]) }.buttonStyle(.bordered)
+            Button("领取") { claimPlaytimeReward(item) }
+                .buttonStyle(.bordered)
+                .disabled(PlaytimeRewardTier.claimFields(for: item.raw) == nil)
         } else if route.title == "称号目录" {
             Button("购买") { post("/titles/buy", fields: ["title_id": .string(item.id)]) }.buttonStyle(.bordered)
         } else if route.title == "我的称号" {
@@ -212,6 +244,14 @@ private struct RemoteFeatureView: View {
             do { _ = try await model.api.post(path: path, fields: fields); await load() }
             catch { model.errorMessage = error.localizedDescription }
         }
+    }
+
+    private func claimPlaytimeReward(_ item: RemoteItem) {
+        guard let fields = PlaytimeRewardTier.claimFields(for: item.raw) else {
+            model.errorMessage = "该奖励缺少可领取的时长档位"
+            return
+        }
+        post("/playtime/rewards/claim", fields: fields)
     }
 
     private func submitSuggestion() {

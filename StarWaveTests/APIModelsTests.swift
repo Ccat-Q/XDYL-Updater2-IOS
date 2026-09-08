@@ -71,6 +71,20 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(items.first?.title, "奖励")
     }
 
+    func testPlaytimeRewardClaimUsesHoursTierInsteadOfGenericRowID() {
+        let reward: JSONValue = .object([
+            "id": .string("row-1"),
+            "hours": .number(12),
+            "coins": .number(50)
+        ])
+        XCTAssertEqual(PlaytimeRewardTier.claimFields(for: reward), ["hours": .number(12)])
+    }
+
+    func testPlaytimeRewardClaimConvertsSecondTiersToHours() {
+        let reward: JSONValue = .object(["required_seconds": .number(7_200)])
+        XCTAssertEqual(PlaytimeRewardTier.claimFields(for: reward), ["hours": .number(2)])
+    }
+
     func testKnownFeatureRoutesAreUnique() {
         XCTAssertEqual(Set(AppEnvironment.apiRoutes.map(\.id)).count, AppEnvironment.apiRoutes.count)
     }

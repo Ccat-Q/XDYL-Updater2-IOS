@@ -192,6 +192,27 @@ struct RemoteItem: Identifiable, Hashable {
     }
 }
 
+/// Playtime rewards are identified by their time tier, not by a generic list
+/// identifier. The service's claim endpoint expects the tier as `hours`.
+enum PlaytimeRewardTier {
+    static func claimFields(for value: JSONValue) -> [String: JSONValue]? {
+        if let hours = number(in: value, keys: ["hours", "hour", "required_hours", "requiredHours", "tier"]) {
+            return ["hours": .number(hours)]
+        }
+        if let seconds = number(in: value, keys: ["required_seconds", "seconds"]), seconds > 0 {
+            return ["hours": .number(seconds / 3_600)]
+        }
+        return nil
+    }
+
+    private static func number(in value: JSONValue, keys: [String]) -> Double? {
+        for key in keys {
+            if let raw = value[key]?.stringValue, let number = Double(raw), number > 0 { return number }
+        }
+        return nil
+    }
+}
+
 struct ForumPostDetail: Equatable {
     let post: RemoteItem
     let replies: [RemoteItem]
