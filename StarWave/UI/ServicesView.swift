@@ -44,7 +44,7 @@ private struct TaskFeatureView: View {
     }
 
     private func taskRow(_ item: RemoteItem) -> some View {
-        let completion = taskCompletion(for: item)
+        let completion = TaskCompletionState(raw: item.raw)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(item.title).font(.headline)
@@ -64,14 +64,6 @@ private struct TaskFeatureView: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    private func taskCompletion(for item: RemoteItem) -> TaskCompletion {
-        let raw = item.raw
-        let status = (raw["status"]?.stringValue ?? "").lowercased()
-        let isClaimed = raw["claimed"]?.boolValue == true || raw["is_claimed"]?.boolValue == true || ["claimed", "已领取"].contains(status)
-        let isComplete = raw["completed"]?.boolValue == true || raw["is_completed"]?.boolValue == true || raw["done"]?.boolValue == true || raw["can_claim"]?.boolValue == true || isClaimed || ["complete", "completed", "done", "finished", "已完成"].contains(status)
-        return TaskCompletion(isComplete: isComplete, isClaimed: isClaimed)
     }
 
     private func rewardText(for item: RemoteItem) -> String {
@@ -118,10 +110,7 @@ private struct TaskFeatureView: View {
     }
 }
 
-private struct TaskCompletion {
-    let isComplete: Bool
-    let isClaimed: Bool
-
+private extension TaskCompletionState {
     var title: String { isClaimed ? "已领取" : (isComplete ? "已完成" : "进行中") }
     var icon: String { isClaimed ? "checkmark.seal.fill" : (isComplete ? "checkmark.circle.fill" : "circle.dotted") }
     var color: Color { isClaimed ? .secondary : (isComplete ? .green : .orange) }

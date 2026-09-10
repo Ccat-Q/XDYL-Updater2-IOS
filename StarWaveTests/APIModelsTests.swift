@@ -85,6 +85,14 @@ final class APIModelsTests: XCTestCase {
         XCTAssertEqual(PlaytimeRewardTier.claimFields(for: reward), ["hours": .number(2)])
     }
 
+    func testTaskCompletionRecognizesServerAliasesAndProgress() {
+        XCTAssertEqual(TaskCompletionState(raw: .object(["status": .string("finished")])), .complete)
+        XCTAssertEqual(TaskCompletionState(raw: .object(["is_claimed": .string("1")])), .claimed)
+        XCTAssertEqual(TaskCompletionState(raw: .object(["progress": .string("3 / 3")])), .complete)
+        XCTAssertEqual(TaskCompletionState(raw: .object(["current_progress": .number(100), "target": .number(100)])), .complete)
+        XCTAssertEqual(TaskCompletionState(raw: .object(["progress": .string("1/2")])), .inProgress)
+    }
+
     func testKnownFeatureRoutesAreUnique() {
         XCTAssertEqual(Set(AppEnvironment.apiRoutes.map(\.id)).count, AppEnvironment.apiRoutes.count)
     }

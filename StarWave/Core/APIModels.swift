@@ -213,6 +213,76 @@ enum PlaytimeRewardTier {
     }
 }
 
+/// Normalizes the task formats returned by different service versions.  The
+/// server remains authoritative for claiming rewards; this only determines
+/// which state the UI presents before a claim is attempted.
+enum TaskCompletionState: Equatable {
+    case inProgress
+    case complete
+    case claimed
+
+    init(raw: JSONValue) {
+        let statuses = ["status", "task_status", "completion_status", "state", "claim_status"]
+            .compactMap { raw[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+        if Self.hasTruthyValue(in: raw, keys: ["claimed", "is_claimed", "received", "is_received", "collected", "is_collected"])
+            || statuses.contains(where: { Self.claimedStatuses.contains($0) }) {
+            self = .claimed
+        } else if Self.hasTruthyValue(in: raw, keys: ["completed", "is_completed", "complete", "is_complete", "done", "is_done", "finished", "is_finished", "achieved", "is_achieved", "can_claim", "canClaim"])
+                    || statuses.contains(where: { Self.completedStatuses.contains($0) })
+                    || Self.progressIsComplete(in: raw) {
+            self = .complete
+        } else {
+            self = .inProgress
+        }
+    }
+
+    var isComplete: Bool { self != .inProgress }
+    var isClaimed: Bool { self == .claimed }
+
+    private static let claimedStatuses: Set<String> = ["claimed", "received", "collected", "已领取", "领取成功"]
+    private static let completedStatuses: Set<String> = ["complete", "completed", "done", "finished", "achieved", "已完成", "完成"]
+    private static let truthyStrings: Set<String> = ["true", "1", "yes", "complete", "completed", "done", "finished", "achieved", "已完成", "完成"]
+
+    private static func hasTruthyValue(in raw: JSONValue, keys: [String]) -> Bool {
+        keys.contains { key in
+            guard let value = raw[key] else { return false }
+            if value.boolValue == true { return true }
+            return value.stringValue.map { truthyStrings.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) } ?? false
+        }
+    }
+
+    private static func progressIsComplete(in raw: JSONValue) -> Bool {
+        for key in ["progress", "task_progress", "completion_progress"] {
+            if let text = raw[key]?.stringValue, isCompleteProgressText(text) { return true }
+        }
+
+        guard let current = number(in: raw, keys: ["current_progress", "current", "completed_count", "count", "value", "progress"]),
+              let target = number(in: raw, keys: ["target", "target_count", "required", "required_count", "goal", "total", "max_progress"]),
+              target > 0 else { return false }
+        return current >= target
+    }
+
+    private static func isCompleteProgressText(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("%"), let percentage = Double(trimmed.dropLast().trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return percentage >= 100
+        }
+        let components = trimmed.split(separator: "/", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard components.count == 2, let current = Double(components[0]), let target = Double(components[1]), target > 0 else { return false }
+        return current >= target
+    }
+
+    private static func number(in raw: JSONValue, keys: [String]) -> Double? {
+        for key in keys {
+            if let text = raw[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), let number = Double(text) {
+                return number
+            }
+        }
+        return nil
+    }
+}
+
 struct ForumPostDetail: Equatable {
     let post: RemoteItem
     let replies: [RemoteItem]
