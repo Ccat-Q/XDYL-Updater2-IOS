@@ -66,8 +66,8 @@ final class APIClient: ObservableObject {
         RemoteItem.list(from: try await send(APIRequest(path: path, query: query)))
     }
 
-    func value(path: String, requiresAuthentication: Bool = true, baseURL: URL = AppEnvironment.apiBaseURL) async throws -> JSONValue {
-        try await send(APIRequest(path: path, requiresAuthentication: requiresAuthentication, baseURL: baseURL))
+    func value(path: String, query: [URLQueryItem] = [], requiresAuthentication: Bool = true, baseURL: URL = AppEnvironment.apiBaseURL) async throws -> JSONValue {
+        try await send(APIRequest(path: path, query: query, requiresAuthentication: requiresAuthentication, baseURL: baseURL))
     }
 
     func post(path: String, fields: [String: JSONValue], requiresAuthentication: Bool = true, baseURL: URL = AppEnvironment.apiBaseURL) async throws -> JSONValue {

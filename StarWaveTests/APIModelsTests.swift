@@ -153,6 +153,36 @@ final class APIModelsTests: XCTestCase {
         XCTAssertTrue(DeveloperHTTPMethod.delete.changesServerState)
     }
 
+    func testDuelModelsDecodeServerAuthoritativeMatchState() throws {
+        let json = #"{"data":{"state":"found","account":"cat","time_pref":"day","waiting_seconds":8,"expires_in":22,"me_confirmed":true,"opponent_confirmed":false,"opponent":{"name":"wolf","rating":1017,"tier":"青铜","tier_index":0,"wins":3,"losses":1,"matches":4}}}"#
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let match = DuelMatch(json: value)
+        XCTAssertEqual(match.state, .found)
+        XCTAssertEqual(match.account, "cat")
+        XCTAssertEqual(match.waitingSeconds, 8)
+        XCTAssertTrue(match.meConfirmed)
+        XCTAssertFalse(match.opponentConfirmed)
+        XCTAssertEqual(match.opponent?.name, "wolf")
+        XCTAssertEqual(match.opponent?.rating, 1017)
+    }
+
+    func testDuelRankUsesServerRankAndPayloadLists() throws {
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"data":[{"name":"cat","rank":2,"rating":1001,"tier":"青铜","wins":2,"losses":1,"matches":3}]}"#.utf8))
+        let rows = DuelPayload.list(value, keys: ["rankings", "players"])
+        let player = DuelPlayer(json: try XCTUnwrap(rows.first))
+        XCTAssertEqual(player.rank, 2)
+        XCTAssertEqual(player.name, "cat")
+        XCTAssertEqual(player.matches, 3)
+    }
+
+    func testDuelInvitesKeepIncomingAndOutgoingDirections() throws {
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"data":{"incoming":[{"invite_id":"in","player":{"name":"a"}}],"outgoing":[{"invite_id":"out","player":{"name":"b"}}]}}"#.utf8))
+        let invites = DuelPayload.invites(value)
+        XCTAssertEqual(invites.count, 2)
+        XCTAssertTrue(invites.contains { $0.id == "in" && $0.isIncoming })
+        XCTAssertTrue(invites.contains { $0.id == "out" && !$0.isIncoming })
+    }
+
     func testDeveloperCatalogContainsAllKnownRouteGroupsWithUniqueMethods() {
         let routes = DeveloperKnownRoute.catalog
         XCTAssertGreaterThan(routes.count, 50)
@@ -160,6 +190,8 @@ final class APIModelsTests: XCTestCase {
         XCTAssertTrue(routes.contains { $0.path == "/upload_v2" || $0.path == "/upload/image" })
         XCTAssertTrue(routes.contains { $0.path == "/notifications/read" && $0.method == .post })
         XCTAssertTrue(routes.contains { $0.baseURL == AppEnvironment.modsBaseURL.absoluteString })
+        XCTAssertTrue(routes.contains { $0.path == "/pvp/match/status" })
+        XCTAssertTrue(routes.contains { $0.path == "/pvp/challenge/respond" && $0.method == .post })
     }
 
     @MainActor func testImmediatePerformanceSamplePublishesTimestampAndCount() {

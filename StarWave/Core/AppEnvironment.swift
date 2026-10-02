@@ -26,6 +26,7 @@ enum AppEnvironment {
     static let apiRoutes: [FeatureRoute] = [
         .init(title: "通知", icon: "bell", path: "/notifications"),
         .init(title: "任务", icon: "checkmark.seal", path: "/tasks"),
+        .init(title: "决斗场", icon: "figure.fencing", path: "/pvp/me"),
         .init(title: "商城", icon: "bag", path: "/shop/items"),
         .init(title: "投票", icon: "chart.bar", path: "/polls"),
         .init(title: "意见箱", icon: "envelope", path: "/suggestions"),

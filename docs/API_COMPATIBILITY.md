@@ -34,6 +34,8 @@
 - 资源下载使用公开的 `:5551/mods/mods.json` 中的 `data.files`；不使用只含分组信息的 `/mods/list` 作为下载目标。每个文件的 `name`、`url`、`sha256`、`size` 和 `kind` 直接对应下载记录与资源展示。下载完成时使用 Documents 内的分块暂存与原子移动，避免后台传输临时文件触发 Cocoa “Cannot create file”。
 - 打赏使用 `POST /forum/post/{id}/tip`；客户端要求输入正整数 `amount`，在服务端成功确认后刷新账户余额。
 - `POST /notifications/read` 为批量已读端点；服务端成功响应后客户端立即清除本地未读徽标，再由后续刷新取得服务器的新计数。
+- 决斗场使用认证的 `/pvp/me`、`/pvp/online`、`/pvp/incoming`、`/pvp/accounts`、`/pvp/match/status` 与 `/pvp/rank?limit=50`。写入端点分别为：`POST /pvp/challenge` `{target}`、`POST /pvp/challenge/respond` `{id, action}`、`POST /pvp/match/join` `{account, time_pref}`、`POST /pvp/match/confirm` `{action:"accept"}` 和空对象 `POST /pvp/match/leave`。匹配状态以 `idle/searching/found/starts/expired/declined` 为准，客户端不会伪造游戏内结算。
+- 决斗场仅在页面前台可见且匹配处于 `searching` 或 `found` 时每 2 秒读取状态；进入后台或离开页面立即停止，重新进入后重新拉取服务端状态。
 
 ## 验证约束
 

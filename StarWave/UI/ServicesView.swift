@@ -13,6 +13,7 @@ struct ServicesView: View {
         .navigationTitle("服务")
         .navigationDestination(for: FeatureRoute.self) { route in
             if route.title == "任务" { TaskFeatureView() }
+            else if route.title == "决斗场" { DuelArenaView() }
             else { RemoteFeatureView(route: route) }
         }
     }
