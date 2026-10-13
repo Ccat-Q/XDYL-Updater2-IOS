@@ -160,7 +160,9 @@ private struct RemoteFeatureView: View {
             else {
                 List(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) }
+                        if route.path == "/server/players" {
+                            NavigationLink { PlayerInfoView(player: item.raw["name"]?.stringValue ?? item.title) } label: { RemoteItemRow(item: item) }
+                        } else { NavigationLink { RemoteItemDetailView(title: route.title, item: item) } label: { RemoteItemRow(item: item) } }
                         actionButtons(for: item)
                     }
                     .padding(.vertical, 4)
@@ -238,7 +240,7 @@ private struct RemoteFeatureView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let value = try await model.api.value(path: route.path)
+            let value = try await model.api.value(path: route.path, query: route.title == "通知" ? [.init(name: "limit", value: "50")] : [])
             if isRanking {
                 rankings = LeaderboardEntry.list(from: value)
                 items = []

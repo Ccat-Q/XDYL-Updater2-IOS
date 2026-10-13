@@ -106,6 +106,8 @@ struct MarketItem: Identifiable {
     let englishName: String
     let buy: Double?
     let sell: Double?
+    let price: Double?
+    let operations: Int?
     let change: String
     let iconData: Data?
     let iconURL: URL?
@@ -115,6 +117,8 @@ struct MarketItem: Identifiable {
         englishName = json["name_en"]?.stringValue ?? json["en"]?.stringValue ?? ""
         buy = json["buy"]?.double ?? json["price"]?.double
         sell = json["sell"]?.double
+        price = json["price"]?.double
+        operations = json["ops"]?.integer
         change = json["change"]?.stringValue ?? ""
         let raw = json["icon_b64"]?.stringValue ?? ""
         iconData = Data(base64Encoded: raw.components(separatedBy: ",").last ?? raw, options: .ignoreUnknownCharacters)
@@ -129,7 +133,9 @@ struct MarketPoint: Identifiable {
     init?(json: JSONValue, index: Int) {
         guard let value = json["value"]?.double ?? json["price"]?.double ?? json.double else { return nil }
         id = index; self.value = value
-        label = json["time"]?.stringValue ?? json["timestamp"]?.stringValue ?? json["created_at"]?.stringValue ?? "\(index + 1)"
+        if let seconds = json["time"]?.double ?? json["timestamp"]?.double {
+            label = Date(timeIntervalSince1970: seconds).formatted(date: .abbreviated, time: .shortened)
+        } else { label = json["time"]?.stringValue ?? json["timestamp"]?.stringValue ?? json["created_at"]?.stringValue ?? "\(index + 1)" }
     }
 }
 

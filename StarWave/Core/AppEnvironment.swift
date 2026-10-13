@@ -16,7 +16,9 @@ enum AppEnvironment {
 
     static func avatarURL(from value: String?) -> URL? {
         guard let value, !value.isEmpty else { return nil }
-        if let url = URL(string: value), url.scheme != nil { return url }
+        if let url = URL(string: value), let scheme = url.scheme { return ["http", "https"].contains(scheme.lowercased()) ? url : nil }
+        if value.hasPrefix("/") { return URL(string: value, relativeTo: webBaseURL)?.absoluteURL }
+        if value.contains("/") { return webBaseURL.appendingPathComponent(value) }
         return webBaseURL
             .appendingPathComponent("user/avatar")
             .appendingPathComponent(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))

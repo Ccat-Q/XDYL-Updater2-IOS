@@ -20,8 +20,9 @@ struct MarketView: View {
                             Text(item.name).font(.headline)
                             if !item.englishName.isEmpty { Text(item.englishName).font(.caption).foregroundStyle(.secondary) }
                             Text("买入 \(item.buy?.formatted() ?? "—") · 卖出 \(item.sell?.formatted() ?? "—")").font(.caption)
+                            if let price = item.price { Text("现价 \(price.formatted()) · 成交 \(item.operations ?? 0)").font(.caption).foregroundStyle(.secondary) }
                         }
-                        Spacer(); Text(item.change).font(.caption).foregroundStyle(.secondary)
+                        Spacer(); Text(item.change.isEmpty || item.change.hasSuffix("%") ? item.change : "\(item.change)%").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

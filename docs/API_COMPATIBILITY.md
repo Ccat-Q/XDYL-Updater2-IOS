@@ -52,9 +52,9 @@
 - 投票发送 `/polls/{id}/vote` `{option_id}`，展示选项、票数、本人选票和结束状态；称号购买及免费佩戴发送 `{title}`。
 - 游戏绑定添加 `{game_name,uuid}`，删除 `{id}`；游戏奖励按 milestones 的 `claimable/claimed` 控制按钮，领取 `{hours}`，所有影响余额的成功操作刷新个人资料。
 - 决斗账号字段是 `game_name/online`，邀请使用扁平的 `from_name/from_rating/from_tier/from_wins/from_losses` 和 `to_name`，有效期为 `expires_at`；战绩使用布尔 `win` 和 `reported_at`。竞技场时间为 day/night/random，默认 day。
-- YSM 表单为 `code/player_name/is_public/skin_file`。只有明确 duplicate 响应才进入二次授权确认，`/confirm_duplicate` 为 `{code,player_name,original_model_id}`。独立 YSM 主机的当前可用性仍需部署方确认，客户端不对不同主机自动重发上传。
+- YSM 表单为 `code/player_name/is_public/skin_file`。只有明确 duplicate 响应才进入二次授权确认，`/confirm_duplicate` 为 `{code,player_name,original_model_id}`。2026-10-13 匿名读取 Windows 默认 `:8080/history?player=__codex_contract_probe__` 返回 HTTP 200 和空 history；上传/授权未执行线上验证。客户端不对不同主机自动重发上传。
 - 支付宝创建 `{item_id}`，前台轮询订单状态；爱发电状态及领取为 `{out_trade_no}`，喵币兑换为 `{coins}`。支付由用户在支付宝完成，客户端以服务器支付与兑换码状态为准。
-- 社区分页、定向回复 `reply_to`、表情插入、正文 HTML/Markdown 图片均有业务页面；图片保持原文顺序。市场只读页面每分钟前台刷新并展示历史价格。
+- 社区分页、定向回复 `reply_to`、表情插入、正文 HTML/Markdown 图片均有业务页面；图片保持原文顺序。市场只读页面每分钟前台刷新并展示历史价格；2026-10-13 匿名 preview 返回 118 个物品，history/nether_star1 返回 time（Unix 秒）与 value 采样点，客户端显示格式化时间、现价、买卖价、百分比涨跌和成交数。
 - 下载验证 HTTP 状态及哈希，取消与重试关联原记录，重启核对后台任务，文件校验和复制在独立队列执行。
 
 ## 验证约束

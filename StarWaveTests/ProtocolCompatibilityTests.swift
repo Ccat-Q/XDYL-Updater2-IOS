@@ -64,6 +64,20 @@ final class ProtocolCompatibilityTests: XCTestCase {
         XCTAssertEqual(profile.level, 5)
     }
 
+    func testRootRelativeAvatarDoesNotDuplicateTheAvatarPrefix() {
+        XCTAssertEqual(AppEnvironment.avatarURL(from: "/user/avatar/cat.png")?.absoluteString, "https://login.lanternwaves.fun/user/avatar/cat.png")
+        XCTAssertNil(AppEnvironment.avatarURL(from: "file:///private/avatar.png"))
+    }
+
+    func testMarketUnixTimestampKeepsPriceAndFormatsTime() throws {
+        let point = try XCTUnwrap(MarketPoint(json: json(#"{"time":1791824460,"value":0.1116,"volume":4342}"#), index: 0))
+        XCTAssertEqual(point.value, 0.1116)
+        XCTAssertFalse(point.label.contains("1791824460"))
+        let item = MarketItem(json: try json(#"{"id":"nether_star1","price":0.143,"buy":0.149,"sell":0.134,"change":0.9,"ops":0}"#))
+        XCTAssertEqual(item.price, 0.143)
+        XCTAssertEqual(item.operations, 0)
+    }
+
     func testMixedHTMLAndMarkdownImagesPreserveTextOrder() {
         let blocks = ContentURLs.blocks(in: "前<img src='/uploads/a.png'>中![图](/uploads/b.png)后")
         XCTAssertEqual(blocks.count, 5)

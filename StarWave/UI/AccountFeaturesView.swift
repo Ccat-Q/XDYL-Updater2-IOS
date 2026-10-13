@@ -60,6 +60,7 @@ struct PlayerInfoView: View {
     @EnvironmentObject private var model: AppModel
     let player: String
     @State private var profile: UserProfile?
+    @State private var loading = false
 
     var body: some View {
         List {
@@ -72,11 +73,13 @@ struct PlayerInfoView: View {
                     if !profile.bio.isEmpty { Text(profile.bio) }
                 }
                 ProfileStatisticsView(profile: profile)
-            } else { ProgressView("读取玩家资料…") }
+            } else if loading { ProgressView("读取玩家资料…") }
+            else { Text("暂时无法读取玩家资料").foregroundStyle(.secondary); Button("重新加载") { Task { await load() } } }
         }
         .navigationTitle(player).task { await load() }.refreshable { await load() }
     }
     private func load() async {
+        loading = true; defer { loading = false }
         do { profile = UserProfile(json: try await model.api.value(path: "/player/info/\(player)")) }
         catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
     }

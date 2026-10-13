@@ -151,6 +151,8 @@ struct PackDownloadsView: View {
                 guard let name = row["name"]?.stringValue else { return nil }
                 return ResourceFile(name: name, url: ContentURLs.resolve(row["url"]?.stringValue), sha256: row["sha256"]?.stringValue, size: row["size"]?.stringValue.flatMap(Int64.init), kind: "pack_zip")
             }
+        } catch is CancellationError { return } catch { model.errorMessage = error.localizedDescription }
+        do {
             let packs = try await model.api.value(path: "/update/pack-links")
             version = packs.payload["pack_version"]?.stringValue ?? ""
             changelog = packs.payload["pack_changelog"]?.stringValue ?? ""
