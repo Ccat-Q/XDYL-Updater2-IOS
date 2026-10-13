@@ -56,10 +56,18 @@ jobs:
         run: |
           DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for runtime, values in d.items() if ".iOS-" in runtime for x in values if x.get("isAvailable")), ""))')"
           if [ -n "$DEVICE_ID" ]; then
-            xcodebuild test-without-building -project StarWave.xcodeproj -scheme StarWave -destination "platform=iOS Simulator,id=$DEVICE_ID" -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData" CODE_SIGNING_ALLOWED=NO
+            xcrun simctl bootstatus "$DEVICE_ID" -b
+            xcodebuild test-without-building -project StarWave.xcodeproj -scheme StarWave -destination "platform=iOS Simulator,id=$DEVICE_ID" -parallel-testing-enabled NO -resultBundlePath "$RUNNER_TEMP/StarWaveTests.xcresult" -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData" CODE_SIGNING_ALLOWED=NO
           else
             echo "::warning::No iOS Simulator runtime is installed; build-for-testing completed, runtime tests skipped."
           fi
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: StarWave-test-results
+          path: ${{ runner.temp }}/StarWaveTests.xcresult
+          if-no-files-found: warn
       - name: Build re-signable app
         run: >-
           xcodebuild archive

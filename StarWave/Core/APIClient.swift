@@ -273,7 +273,6 @@ final class APIClient: ObservableObject {
                     return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate, uploadFileURL: uploadFileURL)
                 }
                 guard generation == sessionStore.generation else { throw CancellationError() }
-                sessionStore.clear()
                 throw AppError.notAuthenticated
             }
             if ysmDuplicate, let json, (http.statusCode == 409 || 200..<300 ~= http.statusCode), json["duplicate"]?.boolValue == true || json.payload["duplicate"]?.boolValue == true { return json }
@@ -283,6 +282,7 @@ final class APIClient: ObservableObject {
         } catch is CancellationError { throw CancellationError()
         } catch let error as AppError {
             if authenticated && generation != sessionStore.generation { throw CancellationError() }
+            if authenticated, error == .notAuthenticated { sessionStore.clear(); throw error }
             if authenticated, case let .server(status, _) = error, status == 401 { sessionStore.clear(); throw AppError.notAuthenticated }
             throw error
         } catch let error as URLError where error.code == .cancelled { throw CancellationError()

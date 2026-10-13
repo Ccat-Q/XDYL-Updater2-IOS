@@ -31,8 +31,9 @@ final class DeveloperSafetyTests: XCTestCase {
             XCTAssertTrue(raw.contains(secret), "Raw export unexpectedly changed \(secret)")
         }
         XCTAssertTrue(safe.contains("visible"))
-        XCTAssertTrue(safe.contains("application/json"))
-        XCTAssertNoThrow(try DeveloperToolsStore.historyDecoder().decode([DeveloperSession].self, from: Data(safe.utf8)))
+        let exported = try DeveloperToolsStore.historyDecoder().decode([DeveloperSession].self, from: Data(safe.utf8))
+        XCTAssertEqual(exported.first?.responseHeaders["Content-Type"], "application/json")
+        XCTAssertEqual(exported.count, 1)
     }
 
     @MainActor func testEncodedQueryUserInfoAndNonJSONTextAreRedacted() {
