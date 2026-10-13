@@ -323,6 +323,28 @@ struct GitHubRelease: Decodable, Equatable {
     let body: String?
     let htmlURL: URL
     let assets: [Asset]
+
+    func isNewer(than currentVersion: String) -> Bool {
+        guard let release = Self.versionComponents(tagName), let current = Self.versionComponents(currentVersion) else { return false }
+        for index in 0..<max(release.count, current.count) {
+            let lhs = index < release.count ? release[index] : 0
+            let rhs = index < current.count ? current[index] : 0
+            if lhs != rhs { return lhs > rhs }
+        }
+        return false
+    }
+
+    private static func versionComponents(_ value: String) -> [Int]? {
+        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.lowercased().hasPrefix("v") { text.removeFirst() }
+        let pieces = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard !pieces.isEmpty, pieces.count <= 4 else { return nil }
+        let numbers = pieces.compactMap { piece -> Int? in
+            guard !piece.isEmpty, piece.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return Int(piece)
+        }
+        return numbers.count == pieces.count ? numbers : nil
+    }
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name", name, body, assets
         case htmlURL = "html_url"

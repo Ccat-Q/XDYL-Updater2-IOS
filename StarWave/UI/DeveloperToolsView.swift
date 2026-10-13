@@ -22,20 +22,16 @@ struct DeveloperToolsView: View {
                 NavigationLink { DeveloperPerformanceView() } label: { Label("性能与网络追踪", systemImage: "waveform.path.ecg") }
                 NavigationLink { DeveloperEnvironmentView() } label: { Label("环境收藏夹", systemImage: "server.rack") }
                 Toggle("持续采样", isOn: $continuousSampling)
-                Text("关闭时仅在性能页打开期间每 2 秒采样；开启后 App 运行期间持续采样。")
+                Text("关闭时仅在性能页打开期间每 2 秒采样；开启后 App 前台运行期间持续采样。进入后台立即停止。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("本地数据") {
+                if let warning = store.persistenceWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 NavigationLink { DeveloperStorageView() } label: { Label("数据与缓存管理", systemImage: "externaldrive") }
                 NavigationLink { DiagnosticsView() } label: { Label("普通网络日志", systemImage: "doc.text.magnifyingglass") }
             }
         }
         .navigationTitle("开发者功能")
-        .onAppear { if continuousSampling { PerformanceMonitor.shared.start(continuous: true) } }
-        .onChange(of: continuousSampling) { enabled in
-            if enabled { PerformanceMonitor.shared.start(continuous: true) }
-            else { PerformanceMonitor.shared.stop() }
-        }
     }
 }
 
@@ -205,6 +201,7 @@ private struct DeveloperRouteCatalogView: View {
     @State private var selectedRoute: DeveloperKnownRoute?
     @State private var result: DeveloperSession?
     @State private var isSending = false
+    @State private var deletionPhrase = ""
 
     var body: some View {
         List {
@@ -229,12 +226,30 @@ private struct DeveloperRouteCatalogView: View {
             }
         }
         .navigationTitle("接口目录")
-        .confirmationDialog("确认发送写请求？", isPresented: Binding(get: { selectedRoute?.method.changesServerState == true }, set: { if !$0 { selectedRoute = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("确认发送写请求？", isPresented: Binding(get: { selectedRoute?.method.changesServerState == true && selectedRoute?.method != .delete }, set: { if !$0 { selectedRoute = nil } }), titleVisibility: .visible) {
             if let route = selectedRoute {
                 Button("发送 \(route.method.rawValue)", role: .destructive) { selectedRoute = nil; execute(route) }
                 Button("取消", role: .cancel) { selectedRoute = nil }
             }
         } message: { Text("一键请求使用目录中的请求示例。请核对字段；需要填写业务数据或文件时，先使用“编辑”。") }
+        .sheet(isPresented: Binding(get: { selectedRoute?.method == .delete }, set: { if !$0 { selectedRoute = nil } })) {
+            NavigationStack {
+                Form {
+                    if let route = selectedRoute { Text("DELETE \(route.baseURL)\(route.path)").font(.footnote) }
+                    TextField("输入 DELETE 以确认", text: $deletionPhrase).textInputAutocapitalization(.characters)
+                }
+                .navigationTitle("确认删除请求")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { selectedRoute = nil } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("发送", role: .destructive) {
+                            guard deletionPhrase == "DELETE", let route = selectedRoute else { return }
+                            selectedRoute = nil; execute(route)
+                        }.disabled(deletionPhrase != "DELETE")
+                    }
+                }
+            }
+        }
         .sheet(item: $result) { session in
             NavigationStack { Form { DeveloperResponseView(session: session) }.navigationTitle("一键请求结果") }
         }
@@ -248,7 +263,8 @@ private struct DeveloperRouteCatalogView: View {
 
     private func send(_ route: DeveloperKnownRoute) {
         guard !route.path.contains("{") else { model.errorMessage = "请先使用“编辑”填写路径中的参数"; return }
-        if route.method.changesServerState { selectedRoute = route }
+        guard !route.requiresFile else { model.errorMessage = "请先使用“编辑”选择上传文件并填写表单"; return }
+        if route.method.changesServerState { deletionPhrase = ""; selectedRoute = route }
         else { execute(route) }
     }
 
@@ -307,6 +323,7 @@ private struct DeveloperSessionsView: View {
 }
 
 private struct DeveloperPerformanceView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var monitor = PerformanceMonitor.shared
     @AppStorage("developer.continuousSampling") private var continuousSampling = false
     var body: some View {
@@ -329,7 +346,7 @@ private struct DeveloperPerformanceView: View {
                 }
                 if let lastSampleDate = monitor.lastSampleDate {
                     LabeledContent("上次采样", value: lastSampleDate.formatted(date: .omitted, time: .standard))
-                    Text("本次打开已采样 \(monitor.sampleCount) 次，数据已保存到性能记录。")
+                    Text("本次打开已采样 \(monitor.pageSampleCount) 次，数据已保存到性能记录。")
                         .font(.caption).foregroundStyle(.green)
                 } else {
                     Text("尚未取得设备快照。") .font(.caption).foregroundStyle(.secondary)
@@ -338,8 +355,10 @@ private struct DeveloperPerformanceView: View {
             }
         }
         .navigationTitle("性能追踪")
-        .onAppear { monitor.start(continuous: true) }
-        .onDisappear { if !continuousSampling { monitor.stop() } }
+        .onAppear { monitor.configure(pageVisible: true, continuous: continuousSampling, foreground: scenePhase == .active) }
+        .onDisappear { monitor.configure(pageVisible: false) }
+        .onChange(of: continuousSampling) { monitor.configure(continuous: $0) }
+        .onChange(of: scenePhase) { monitor.configure(foreground: $0 == .active) }
     }
 }
 

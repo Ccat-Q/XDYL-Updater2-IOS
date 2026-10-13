@@ -5,21 +5,46 @@ import Combine
 final class APIClient: ObservableObject {
     private let sessionStore: SessionStore
     private let session: URLSession
+    private let qqSession: URLSession
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let diagnostics = DiagnosticsStore.shared
-    private var refreshTask: Task<Bool, Error>?
+    private struct RefreshFlight {
+        let id: UUID
+        let generation: UUID
+        let task: Task<Bool, Error>
+    }
+    private var refreshFlight: RefreshFlight?
+    private var authenticationAttempt = UUID()
+    private var notifiedGeneration: UUID?
     private var inFlightWrites: Set<String> = []
 
-    init(sessionStore: SessionStore, session: URLSession = .shared) {
+    init(sessionStore: SessionStore, session: URLSession = .shared, qqSession: URLSession? = nil) {
         self.sessionStore = sessionStore
         self.session = session
+        self.qqSession = qqSession ?? URLSession(configuration: .ephemeral, delegate: QQRedirectPolicy(), delegateQueue: nil)
         decoder.dateDecodingStrategy = .iso8601
     }
 
     /// The legacy identity service accepts `account` (an email address or username),
     /// not the community API's `username` field.
-    func login(account: String, password: String) async throws -> AuthTokens {
+    func beginAuthentication() -> UUID {
+        authenticationAttempt = UUID()
+        return authenticationAttempt
+    }
+
+    func cancelAuthentication(_ attempt: UUID) {
+        if authenticationAttempt == attempt { authenticationAttempt = UUID() }
+    }
+
+    private func checkAuthentication(_ attempt: UUID, generation: UUID) throws {
+        try Task.checkCancellation()
+        guard authenticationAttempt == attempt, sessionStore.generation == generation else { throw CancellationError() }
+    }
+
+    func login(account: String, password: String, attempt: UUID? = nil) async throws -> AuthTokens {
+        let attempt = attempt ?? beginAuthentication()
+        let generation = sessionStore.generation
         let value = try await send(APIRequest(
             path: "/login",
             method: .post,
@@ -27,6 +52,7 @@ final class APIClient: ObservableObject {
             requiresAuthentication: false,
             baseURL: AppEnvironment.webBaseURL
         ))
+        try checkAuthentication(attempt, generation: generation)
         guard let tokens = AuthTokens(json: value) else { throw AppError.decoding("登录响应中没有令牌") }
         sessionStore.save(tokens)
         return tokens
@@ -57,16 +83,45 @@ final class APIClient: ObservableObject {
         return nil
     }
 
-    func qqLoginState(sessionID: String) async throws -> QQLoginState {
+    func qqLoginState(sessionID: String, attempt: UUID? = nil) async throws -> QQLoginState {
+        let attempt = attempt ?? beginAuthentication()
+        let generation = sessionStore.generation
         let state = QQLoginState(json: try await qqStatus(sessionID: sessionID))
+        try checkAuthentication(attempt, generation: generation)
         if case let .authenticated(tokens) = state { sessionStore.save(tokens) }
         return state
     }
 
     func linkQQ(token: String, account: String, password: String) async throws {
+        let attempt = beginAuthentication()
+        let generation = sessionStore.generation
         let value = try await post(path: "/qq/bind", fields: ["temp_token": .string(token), "account": .string(account), "password": .string(password)], requiresAuthentication: false)
+        try checkAuthentication(attempt, generation: generation)
         guard let tokens = AuthTokens(json: value) else { throw AppError.decoding("QQ 绑定响应缺少登录令牌") }
         sessionStore.save(tokens)
+    }
+
+    /// Registration may return login tokens or only a successful acknowledgement.
+    func register(email: String, username: String, password: String, code: String) async throws -> Bool {
+        let attempt = beginAuthentication()
+        let generation = sessionStore.generation
+        let value = try await post(path: "/register", fields: ["email": .string(email), "username": .string(username), "password": .string(password), "code": .string(code)], requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
+        try checkAuthentication(attempt, generation: generation)
+        guard let tokens = AuthTokens(json: value) else { return false }
+        sessionStore.save(tokens)
+        return true
+    }
+
+    /// Windows sends this best-effort hook after login. It is not authentication
+    /// or a heartbeat; failure must not log the user out or fabricate success.
+    func notifyLogin(playerName: String?) async {
+        let generation = sessionStore.generation
+        guard notifiedGeneration != generation, let token = sessionStore.accessToken,
+              let name = playerName ?? sessionStore.username, !name.isEmpty, name != "用户" else { return }
+        notifiedGeneration = generation
+        // Per-generation de-duplication above is the hook's write guard; an old
+        // identity's in-flight notification must not block the new identity.
+        _ = try? await send(APIRequest(path: "/notify-login", method: .post, body: .object(["player_name": .string(name), "token": .string(token)]), requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL))
     }
 
     func request(_ endpoint: APIRequest) async throws -> JSONValue {
@@ -104,8 +159,11 @@ final class APIClient: ObservableObject {
     }
 
     func bindQQ(sessionID: String) async throws -> Bool {
+        let generation = sessionStore.generation
         let status = try await qqStatus(sessionID: sessionID)
-        guard let token = status.payload["temp_token"]?.stringValue, !token.isEmpty else { return false }
+        try Task.checkCancellation()
+        guard generation == sessionStore.generation else { throw CancellationError() }
+        guard let token = QQLoginState.bindingToken(in: status) else { return false }
         _ = try await post(path: "/user/bind-qq", fields: ["temp_token": .string(token)])
         return true
     }
@@ -135,6 +193,22 @@ final class APIClient: ObservableObject {
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         return try await execute(request, authenticated: requiresAuthentication, ysmDuplicate: path == "/upload_v2")
+    }
+
+    func uploadFile(path: String, fileURL: URL, fields: [String: String], fieldName: String = "skin_file", baseURL: URL, requiresAuthentication: Bool = false) async throws -> JSONValue {
+        let key = baseURL.absoluteString + path
+        guard inFlightWrites.insert(key).inserted else { throw AppError.decoding("上传正在处理，请稍候") }
+        defer { inFlightWrites.remove(key) }
+        let url = baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        guard isAllowed(url) else { throw AppError.transport("上传地址不在允许的服务列表中") }
+        let boundary = "StarWave-\(UUID().uuidString)"
+        let bodyURL = try await MultipartFileUpload.prepare(fileURL: fileURL, filename: fileURL.lastPathComponent, fieldName: fieldName, fields: fields, boundary: boundary)
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+        try Task.checkCancellation()
+        var request = URLRequest(url: url, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        return try await execute(request, authenticated: requiresAuthentication, ysmDuplicate: path == "/upload_v2", uploadFileURL: bodyURL)
     }
 
     func latestRelease() async throws -> GitHubRelease {
@@ -167,7 +241,8 @@ final class APIClient: ObservableObject {
         return try await execute(request, authenticated: endpoint.requiresAuthentication, allowRefresh: allowRefresh)
     }
 
-    private func execute(_ original: URLRequest, authenticated: Bool, allowRefresh: Bool = true, qqBinding: Bool = false, ysmDuplicate: Bool = false) async throws -> JSONValue {
+    private func execute(_ original: URLRequest, authenticated: Bool, allowRefresh: Bool = true, qqBinding: Bool = false, ysmDuplicate: Bool = false, uploadFileURL: URL? = nil) async throws -> JSONValue {
+        try Task.checkCancellation()
         var request = original
         if authenticated {
             guard let token = sessionStore.accessToken else { throw AppError.notAuthenticated }
@@ -177,9 +252,11 @@ final class APIClient: ObservableObject {
         let generation = sessionStore.generation
         let started = Date()
         do {
-            let activeSession = qqBinding ? URLSession(configuration: .ephemeral, delegate: QQRedirectPolicy(), delegateQueue: nil) : session
-            defer { if qqBinding { activeSession.finishTasksAndInvalidate() } }
-            let (data, response) = try await activeSession.data(for: request)
+            let activeSession = qqBinding ? qqSession : session
+            let data: Data
+            let response: URLResponse
+            if let uploadFileURL { (data, response) = try await activeSession.upload(for: request, fromFile: uploadFileURL) }
+            else { (data, response) = try await activeSession.data(for: request) }
             try Task.checkCancellation()
             if authenticated && generation != sessionStore.generation { throw CancellationError() }
             guard let http = response as? HTTPURLResponse else { throw AppError.invalidResponse }
@@ -188,11 +265,14 @@ final class APIClient: ObservableObject {
             let unauthorized = http.statusCode == 401 || json?["code"]?.integer == 401
             if unauthorized, authenticated {
                 if allowRefresh, let current = sessionStore.accessToken, request.value(forHTTPHeaderField: "Authorization") != "Bearer \(current)" {
-                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate)
+                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate, uploadFileURL: uploadFileURL)
                 }
                 if allowRefresh, try await refreshToken() {
-                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate)
+                    try Task.checkCancellation()
+                    guard generation == sessionStore.generation else { throw CancellationError() }
+                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate, uploadFileURL: uploadFileURL)
                 }
+                guard generation == sessionStore.generation else { throw CancellationError() }
                 sessionStore.clear()
                 throw AppError.notAuthenticated
             }
@@ -202,10 +282,12 @@ final class APIClient: ObservableObject {
             return json
         } catch is CancellationError { throw CancellationError()
         } catch let error as AppError {
+            if authenticated && generation != sessionStore.generation { throw CancellationError() }
             if authenticated, case let .server(status, _) = error, status == 401 { sessionStore.clear(); throw AppError.notAuthenticated }
             throw error
         } catch let error as URLError where error.code == .cancelled { throw CancellationError()
         } catch {
+            if authenticated && generation != sessionStore.generation { throw CancellationError() }
             diagnostics.record(method: request.httpMethod ?? "GET", url: url, detail: "网络传输失败")
             throw AppError.transport(error.localizedDescription)
         }
@@ -231,16 +313,21 @@ final class APIClient: ObservableObject {
     }
 
     private func refreshToken() async throws -> Bool {
-        if let refreshTask { return try await refreshTask.value }
-        let task = Task { try await self.performRefresh() }
-        refreshTask = task
-        defer { refreshTask = nil }
+        let generation = sessionStore.generation
+        if let flight = refreshFlight, flight.generation == generation { return try await flight.task.value }
+        refreshFlight?.task.cancel()
+        refreshFlight = nil
+        guard let refresh = sessionStore.refreshToken else { return false }
+        let id = UUID()
+        let task = Task { try await self.performRefresh(generation: generation, refresh: refresh) }
+        refreshFlight = RefreshFlight(id: id, generation: generation, task: task)
+        defer { if refreshFlight?.id == id { refreshFlight = nil } }
         return try await task.value
     }
 
-    private func performRefresh() async throws -> Bool {
-        guard let refresh = sessionStore.refreshToken else { return false }
-        let generation = sessionStore.generation
+    private func performRefresh(generation: UUID, refresh: String) async throws -> Bool {
+        try Task.checkCancellation()
+        guard generation == sessionStore.generation else { throw CancellationError() }
         let value = try await send(APIRequest(
             path: "/refresh",
             method: .post,
@@ -250,7 +337,7 @@ final class APIClient: ObservableObject {
         ), allowRefresh: false)
         guard generation == sessionStore.generation else { throw CancellationError() }
         guard let tokens = AuthTokens(json: value) else { return false }
-        sessionStore.save(tokens)
+        sessionStore.save(tokens, isRefresh: true)
         return true
     }
 

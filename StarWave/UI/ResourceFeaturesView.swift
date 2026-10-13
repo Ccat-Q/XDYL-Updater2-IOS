@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
 struct YSMPublishView: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage("ysm_api_base") private var base = "http://api.lanternwaves.fun:8080"
@@ -14,9 +15,22 @@ struct YSMPublishView: View {
     @State private var duplicate: JSONValue?
     @State private var history: [RemoteItem] = []
     @State private var codes: [RedeemCode] = []
-    @State private var submittedCode = ""
-    @State private var submittedPlayer = ""
-    @State private var submittedBase = AppEnvironment.ysmBaseURL
+    @State private var submission: Submission?
+    @State private var uploadTask: Task<Void, Never>?
+    @State private var historyTask: Task<Void, Never>?
+    @State private var pageGeneration = UUID()
+    @State private var historyGeneration = UUID()
+    @State private var codesGeneration = UUID()
+    @State private var operationID: UUID?
+    @State private var isVisible = false
+
+    private struct Submission {
+        let code: String
+        let player: String
+        let isPublic: Bool
+        let baseURL: URL
+        let session: UUID
+    }
 
     var body: some View {
         Form {
@@ -39,16 +53,28 @@ struct YSMPublishView: View {
                 Button(busy ? "发布中…" : "上传并发布") { upload() }.disabled(busy || code.isEmpty || player.isEmpty || file == nil)
             }
             .disabled(busy)
+            if busy {
+                Section {
+                    ProgressView("正在准备文件或等待服务器响应…")
+                    Button("取消当前操作", role: .destructive) { cancelUpload() }
+                    Text("文件分块处理，不会整包读入内存。取消本地请求不能撤销服务器已完成的发布或授权。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if let result {
                 Section("发布结果") {
                     let source = result.payload
+                    if let submission {
+                        Text("玩家：\(submission.player)")
+                        Text(submission.baseURL.absoluteString).font(.caption).foregroundStyle(.secondary)
+                    }
                     if let message = result["message"]?.stringValue { Text(message) }
                     if let id = source["model_id"]?.stringValue ?? result["model_id"]?.stringValue { Text("模型 ID：\(id)").textSelection(.enabled); Button("复制模型 ID") { UIPasteboard.general.string = id } }
                     if let path = source["skin_path"]?.stringValue ?? result["skin_path"]?.stringValue { Text(path).font(.caption).textSelection(.enabled) }
                 }
             }
             Section("上传历史") {
-                Button("查询此玩家的上传历史") { Task { await loadHistory() } }.disabled(player.isEmpty || busy)
+                Button("查询此玩家的上传历史") { queryHistory() }.disabled(player.isEmpty || busy)
                 ForEach(history) { item in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.raw["model_id"]?.stringValue ?? item.raw["model"]?.stringValue ?? item.title)
@@ -67,49 +93,129 @@ struct YSMPublishView: View {
             case let .failure(error): model.errorMessage = error.localizedDescription
             }
         }
-        .task { await loadCodes() }
+        .onAppear { isVisible = true }
+        .onDisappear {
+            isVisible = false; pageGeneration = UUID()
+            cancelUpload(); invalidateHistory()
+        }
+        .onChange(of: player) { _ in invalidateHistory() }
+        .onChange(of: base) { _ in invalidateHistory(); result = nil }
+        .task(id: isVisible) { guard isVisible else { return }; await loadCodes() }
         .confirmationDialog("文件已存在，继续授权给此玩家？", isPresented: Binding(get: { duplicate != nil }, set: { if !$0 { duplicate = nil } }), titleVisibility: .visible) {
             if let duplicate { Button("确认授权") { self.duplicate = nil; authorize(duplicate) } }
             Button("取消", role: .cancel) { duplicate = nil }
-        } message: { Text("玩家：\(submittedPlayer)。继续授权会使用本次提交的兑换码。") }
+        } message: { Text("玩家：\(submission?.player ?? "")。继续授权会使用本次提交的兑换码与服务地址：\(submission?.baseURL.absoluteString ?? "")。") }
     }
 
     private func loadCodes() async {
-        do { codes = try await model.api.value(path: "/user/items").rows("items").enumerated().map { RedeemCode(json: $0.element, index: $0.offset) } }
-        catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
+        let requestID = UUID(), page = pageGeneration, session = model.sessionStore.generation
+        codesGeneration = requestID
+        do {
+            let value = try await model.api.value(path: "/user/items")
+            guard isCurrent(page: page, session: session), codesGeneration == requestID else { return }
+            codes = value.rows("items").enumerated().map { RedeemCode(json: $0.element, index: $0.offset) }
+        } catch {
+            guard isCurrent(page: page, session: session), codesGeneration == requestID else { return }
+            model.errorMessage = error.localizedDescription
+        }
     }
-    private func loadHistory() async {
-        do { history = try await model.api.value(path: "/history", query: [.init(name: "player", value: player)], requiresAuthentication: false, baseURL: AppEnvironment.ysmBaseURL).rows("history", "items").enumerated().map { RemoteItem(json: $0.element, index: $0.offset) } }
-        catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
+
+    private func queryHistory() {
+        historyTask?.cancel()
+        let name = player, baseURL = AppEnvironment.ysmBaseURL
+        historyTask = Task { await loadHistory(playerName: name, baseURL: baseURL) }
     }
+
+    private func invalidateHistory() {
+        historyGeneration = UUID()
+        historyTask?.cancel(); historyTask = nil
+        history = []
+    }
+
+    private func loadHistory(playerName: String, baseURL: URL) async {
+        guard !playerName.isEmpty, player == playerName, AppEnvironment.ysmBaseURL == baseURL, !Task.isCancelled else { return }
+        let requestID = UUID(), page = pageGeneration, session = model.sessionStore.generation
+        historyGeneration = requestID
+        do {
+            let value = try await model.api.value(path: "/history", query: [.init(name: "player", value: playerName)], requiresAuthentication: false, baseURL: baseURL)
+            guard isCurrent(page: page, session: session), historyGeneration == requestID,
+                  player == playerName, AppEnvironment.ysmBaseURL == baseURL else { return }
+            history = value.rows("history", "items").enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
+        } catch {
+            guard isCurrent(page: page, session: session), historyGeneration == requestID,
+                  player == playerName, AppEnvironment.ysmBaseURL == baseURL else { return }
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
     private func upload() {
-        guard let file, !busy else { return }
-        busy = true; result = nil; submittedCode = code; submittedPlayer = player
-        let baseURL = AppEnvironment.ysmBaseURL
-        submittedBase = baseURL
-        let fields = ["code": code, "player_name": player, "is_public": isPublic ? "true" : "false"]
-        Task {
-            defer { busy = false }
+        guard let file, !busy, isVisible else { return }
+        let snapshot = Submission(code: code, player: player, isPublic: isPublic, baseURL: AppEnvironment.ysmBaseURL, session: model.sessionStore.generation)
+        submission = snapshot
+        let id = UUID(), page = pageGeneration
+        operationID = id; busy = true; result = nil; duplicate = nil
+        uploadTask = Task {
+            defer { finishOperation(id) }
             let scoped = file.startAccessingSecurityScopedResource()
             defer { if scoped { file.stopAccessingSecurityScopedResource() } }
             do {
-                let data = try await Task.detached { try Data(contentsOf: file) }.value
-                let value = try await model.api.upload(path: "/upload_v2", data: data, filename: file.lastPathComponent, fieldName: "skin_file", fields: fields, baseURL: baseURL, requiresAuthentication: false)
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                let fields = ["code": snapshot.code, "player_name": snapshot.player, "is_public": snapshot.isPublic ? "true" : "false"]
+                let value = try await model.api.uploadFile(path: "/upload_v2", fileURL: file, fields: fields, fieldName: "skin_file", baseURL: snapshot.baseURL, requiresAuthentication: false)
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
                 if value["duplicate"]?.boolValue == true || value.payload["duplicate"]?.boolValue == true { duplicate = value }
-                else { result = value; await loadHistory(); await loadCodes() }
-            } catch { model.errorMessage = error.localizedDescription }
+                else {
+                    result = value
+                    await loadHistory(playerName: snapshot.player, baseURL: snapshot.baseURL)
+                    guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                    await loadCodes()
+                }
+            } catch {
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                model.errorMessage = error.localizedDescription
+            }
         }
     }
+
     private func authorize(_ value: JSONValue) {
+        guard !busy, isVisible, let snapshot = submission, snapshot.session == model.sessionStore.generation else { return }
         guard let original = value.payload["original_model_id"] ?? value["original_model_id"] else { model.errorMessage = "重复文件响应缺少模型 ID"; return }
-        busy = true
-        Task {
-            defer { busy = false }
+        let id = UUID(), page = pageGeneration
+        operationID = id; busy = true
+        uploadTask = Task {
+            defer { finishOperation(id) }
             do {
-                result = try await model.api.post(path: "/confirm_duplicate", fields: ["code": .string(submittedCode), "player_name": .string(submittedPlayer), "original_model_id": original], requiresAuthentication: false, baseURL: submittedBase)
-                await loadHistory(); await loadCodes()
-            } catch { model.errorMessage = error.localizedDescription }
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                let response = try await model.api.post(path: "/confirm_duplicate", fields: ["code": .string(snapshot.code), "player_name": .string(snapshot.player), "original_model_id": original], requiresAuthentication: false, baseURL: snapshot.baseURL)
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                result = response
+                await loadHistory(playerName: snapshot.player, baseURL: snapshot.baseURL)
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                await loadCodes()
+            } catch {
+                guard isCurrentOperation(id, page: page, session: snapshot.session) else { return }
+                model.errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func isCurrent(page: UUID, session: UUID) -> Bool {
+        isVisible && pageGeneration == page && model.sessionStore.generation == session && !Task.isCancelled
+    }
+
+    private func isCurrentOperation(_ id: UUID, page: UUID, session: UUID) -> Bool {
+        operationID == id && isCurrent(page: page, session: session)
+    }
+
+    private func finishOperation(_ id: UUID) {
+        guard operationID == id else { return }
+        busy = false; operationID = nil; uploadTask = nil
+    }
+
+    private func cancelUpload() {
+        operationID = nil
+        uploadTask?.cancel(); uploadTask = nil
+        busy = false; duplicate = nil
     }
 }
 

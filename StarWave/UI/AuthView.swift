@@ -10,6 +10,7 @@ struct AuthView: View {
     @State private var accountFlow: AccountFlow?
     @State private var qqLink: QQLinkContext?
     @State private var loginTask: Task<Void, Never>?
+    @State private var authenticationAttempt: UUID?
 
     var body: some View {
         NavigationStack {
@@ -35,12 +36,14 @@ struct AuthView: View {
                             .textContentType(.password)
                             .textFieldStyle(.roundedBorder)
                         Button {
-                            Task { _ = await model.login(account: username, password: password) }
+                            let attempt = model.api.beginAuthentication()
+                            authenticationAttempt = attempt
+                            loginTask = Task { _ = await model.login(account: username, password: password, attempt: attempt) }
                         } label: {
                             Label("登录", systemImage: "person.badge.key").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(username.isEmpty || password.isEmpty || model.isBusy)
+                        .disabled(username.isEmpty || password.isEmpty || model.isBusy || isPollingQQ)
 
                         Button {
                             beginQQLogin()
@@ -49,12 +52,12 @@ struct AuthView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-                        .disabled(isPollingQQ)
+                        .disabled(isPollingQQ || model.isBusy)
 
                         HStack {
-                            Button("注册账号") { accountFlow = .register }
+                            Button("注册账号") { accountFlow = .register }.disabled(isPollingQQ || model.isBusy)
                             Spacer()
-                            Button("忘记密码") { accountFlow = .resetPassword }
+                            Button("忘记密码") { accountFlow = .resetPassword }.disabled(isPollingQQ || model.isBusy)
                         }
                         .font(.subheadline)
                     }
@@ -74,27 +77,34 @@ struct AuthView: View {
             .loading(model.isBusy)
             .sheet(item: $accountFlow) { flow in AccountFlowView(flow: flow) }
             .sheet(item: $qqLink) { context in QQLinkAccountView(context: context) }
-            .onDisappear { loginTask?.cancel(); loginTask = nil }
+            .onDisappear {
+                loginTask?.cancel(); loginTask = nil
+                if let authenticationAttempt { model.api.cancelAuthentication(authenticationAttempt) }
+            }
         }
     }
 
     private func beginQQLogin() {
         let id = UUID().uuidString
+        let attempt = model.api.beginAuthentication()
+        authenticationAttempt = attempt
         qqSessionID = id
         isPollingQQ = true
         loginTask = Task {
             defer { isPollingQQ = false }
             do {
-                openURL(try await model.api.startQQLogin(sessionID: id))
-            } catch {
+                let url = try await model.api.startQQLogin(sessionID: id)
+                try Task.checkCancellation()
+                openURL(url)
+            } catch is CancellationError { return } catch {
                 model.errorMessage = error.localizedDescription
                 return
             }
             for _ in 0..<45 {
                 guard !Task.isCancelled else { return }
                 do {
-                    switch try await model.api.qqLoginState(sessionID: id) {
-                    case .authenticated: await model.refreshProfile(); return
+                    switch try await model.api.qqLoginState(sessionID: id, attempt: attempt) {
+                    case .authenticated: return
                     case let .needsBinding(token, nickname): qqLink = QQLinkContext(token: token, nickname: nickname); return
                     case .waiting: break
                     }
@@ -123,11 +133,20 @@ private struct AccountFlowView: View {
     @State private var password = ""
     @State private var message = ""
     @State private var busy = false
+    @State private var agreed = false
+    @State private var submissionTask: Task<Void, Never>?
+    @State private var verificationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
             Form {
-                if flow == .register { TextField("用户名", text: $username).textInputAutocapitalization(.never) }
+                if flow == .register {
+                    TextField("玩家名（将作为游戏内名称）", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Section("注册说明") {
+                        Text("玩家名将作为游戏内名称；验证码将发送到注册邮箱。").font(.footnote).foregroundStyle(.secondary)
+                        Toggle("我已阅读并同意注册须知", isOn: $agreed)
+                    }
+                }
                 TextField("邮箱", text: $email).keyboardType(.emailAddress).textInputAutocapitalization(.never)
                 HStack {
                     TextField("验证码", text: $code).keyboardType(.numberPad)
@@ -141,34 +160,40 @@ private struct AccountFlowView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("提交") { submit() }
-                        .disabled(email.isEmpty || code.isEmpty || password.count < 6 || (flow == .register && username.isEmpty) || busy)
+                        .disabled(email.isEmpty || code.isEmpty || password.count < 6 || (flow == .register && (username.isEmpty || !agreed)) || busy)
                 }
             }
+            .onDisappear { submissionTask?.cancel(); verificationTask?.cancel() }
         }
     }
 
     private func sendCode() {
+        guard !busy else { return }
         busy = true
-        Task {
+        verificationTask = Task {
             defer { busy = false }
             do {
                 let fields: [String: JSONValue] = flow == .register ? ["email": .string(email), "purpose": .string("register")] : ["email": .string(email)]
                 _ = try await model.api.post(path: flow == .register ? "/send-verify-code" : "/forgot-password", fields: fields, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
                 message = "验证码已发送"
-            } catch { model.errorMessage = error.localizedDescription }
+            } catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
         }
     }
 
     private func submit() {
+        guard !busy, flow != .register || agreed else { return }
         busy = true
-        Task {
+        submissionTask = Task {
             defer { busy = false }
             do {
-                var fields: [String: JSONValue] = ["email": .string(email), flow == .register ? "password" : "new_password": .string(password), "code": .string(code)]
-                if flow == .register { fields["username"] = .string(username) }
-                _ = try await model.api.post(path: flow == .register ? "/register" : "/reset-password", fields: fields, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
-                dismiss()
-            } catch { model.errorMessage = error.localizedDescription }
+                if flow == .register {
+                    if try await model.api.register(email: email.trimmingCharacters(in: .whitespacesAndNewlines), username: username.trimmingCharacters(in: .whitespacesAndNewlines), password: password, code: code.trimmingCharacters(in: .whitespacesAndNewlines)) { dismiss() }
+                    else { message = "注册成功，请关闭本页后使用玩家名或邮箱登录。" }
+                } else {
+                    _ = try await model.api.post(path: "/reset-password", fields: ["email": .string(email), "new_password": .string(password), "code": .string(code)], requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
+                    dismiss()
+                }
+            } catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
         }
     }
 }
@@ -187,6 +212,7 @@ private struct QQLinkAccountView: View {
     @State private var password = ""
     @State private var busy = false
     @State private var register = false
+    @State private var linkTask: Task<Void, Never>?
     var body: some View {
         NavigationStack {
             Form {
@@ -199,14 +225,16 @@ private struct QQLinkAccountView: View {
             .navigationTitle("关联 QQ")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
             .sheet(isPresented: $register) { AccountFlowView(flow: .register) }
+            .onDisappear { linkTask?.cancel() }
         }
     }
     private func link() {
+        guard !busy else { return }
         busy = true
-        Task {
+        linkTask = Task {
             defer { busy = false }
-            do { try await model.api.linkQQ(token: context.token, account: account, password: password); await model.refreshProfile(); dismiss() }
-            catch { model.errorMessage = error.localizedDescription }
+            do { try await model.api.linkQQ(token: context.token, account: account, password: password); dismiss() }
+            catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
         }
     }
 }

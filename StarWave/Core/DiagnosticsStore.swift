@@ -19,7 +19,7 @@ final class DiagnosticsStore: ObservableObject {
     private init() {
         entries = (try? String(contentsOf: logURL, encoding: .utf8))?
             .split(separator: "\n")
-            .map(String.init)
+            .map { DeveloperToolsStore.redact(String($0)) }
             .suffix(maximumEntries)
             ?? []
     }
@@ -30,11 +30,11 @@ final class DiagnosticsStore: ObservableObject {
     }
 
     func record(method: String, url: URL, status: Int? = nil, durationMilliseconds: Int? = nil, responseBytes: Int? = nil, detail: String? = nil) {
-        var line = "\(formatter.string(from: Date())) \(method) \(url.absoluteString)"
+        var line = "\(formatter.string(from: Date())) \(method) \(DeveloperToolsStore.redactURL(url.absoluteString))"
         if let status { line += " → HTTP \(status)" }
         if let durationMilliseconds { line += " · \(durationMilliseconds) ms" }
         if let responseBytes { line += " · \(responseBytes) B" }
-        if let detail, !detail.isEmpty { line += " — \(detail)" }
+        if let detail, !detail.isEmpty { line += " — \(DeveloperToolsStore.redact(detail))" }
         entries.append(line)
         if entries.count > maximumEntries { entries.removeFirst(entries.count - maximumEntries) }
         persist()
@@ -46,6 +46,6 @@ final class DiagnosticsStore: ObservableObject {
     }
 
     private func persist() {
-        try? entries.joined(separator: "\n").appending("\n").write(to: logURL, atomically: true, encoding: .utf8)
+        try? Data(entries.joined(separator: "\n").appending("\n").utf8).write(to: logURL, options: [.atomic, .completeFileProtection])
     }
 }

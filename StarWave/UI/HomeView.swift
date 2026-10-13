@@ -64,7 +64,9 @@ struct HomeView: View {
         async let statusRequest = model.api.values(path: "/server/players")
         announcements = (try? await announcementsRequest) ?? []
         serverStatus = (try? await statusRequest) ?? []
-        release = updateChecksEnabled ? (try? await model.api.latestRelease()) : nil
+        if updateChecksEnabled, let latest = try? await model.api.latestRelease(),
+           latest.isNewer(than: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0") { release = latest }
+        else { release = nil }
         await model.refreshUnreadCount()
     }
 }

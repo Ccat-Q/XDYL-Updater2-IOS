@@ -190,7 +190,7 @@ struct StoreView: View {
         .navigationTitle("商城").task { await load() }.refreshable { await load() }
         .confirmationDialog("确认购买并扣除喵币？", isPresented: Binding(get: { buying != nil }, set: { if !$0 { buying = nil } }), titleVisibility: .visible) {
             if let item = buying { Button("确认购买") { buying = nil; purchase(item) } }
-        }
+        } message: { if let buying { Text("\(buying.title) · \(buying.raw["price"]?.stringValue ?? "价格以服务器为准") 喵币") } }
     }
     private func load() async {
         do { items = try await model.api.value(path: "/shop/items").rows("items").enumerated().map { RemoteItem(json: $0.element, index: $0.offset) } }
@@ -212,13 +212,18 @@ struct AfdianExchangeView: View {
     @State private var result = ""
     @State private var busy = false
     @State private var confirm = false
+    @State private var requestTask: Task<Void, Never>?
+    @State private var requestID = UUID()
+    @State private var confirmedOrder = ""
+    private var trimmedOrder: String { order.trimmingCharacters(in: .whitespacesAndNewlines) }
     var body: some View {
         Form {
             Section("订单兑换") {
                 TextField("爱发电订单号", text: $order).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("查询订单") { send(claim: false) }.disabled(order.isEmpty || busy)
-                Button("领取兑换码") { confirm = true }.disabled(order.isEmpty || busy)
+                Button("查询订单") { send(claim: false, orderNumber: trimmedOrder) }.disabled(trimmedOrder.isEmpty || busy)
+                Button("领取兑换码") { confirmedOrder = trimmedOrder; confirm = true }.disabled(trimmedOrder.isEmpty || busy)
                 if !result.isEmpty { Text(result).textSelection(.enabled) }
+                Text("查询与领取仅针对当前订单号。如果离开页面或改号前已提交领取，可在“我的兑换码”核对结果。").font(.caption).foregroundStyle(.secondary)
                 NavigationLink("我的兑换码") { RedeemCodesView() }
             }
             Section("购买入口") {
@@ -227,19 +232,29 @@ struct AfdianExchangeView: View {
             }
         }
         .navigationTitle("爱发电兑换")
-        .confirmationDialog("确认领取此订单的兑换码？", isPresented: $confirm, titleVisibility: .visible) { Button("确认领取") { send(claim: true) } }
+        .confirmationDialog("确认领取此订单的兑换码？", isPresented: $confirm, titleVisibility: .visible) { Button("确认领取") { send(claim: true, orderNumber: confirmedOrder) } } message: { Text(confirmedOrder) }
+        .onChange(of: order) { _ in
+            // Editing the number must not relabel an old response as the new order.
+            requestID = UUID(); requestTask?.cancel(); requestTask = nil; busy = false; result = ""
+        }
+        .onDisappear { requestID = UUID(); requestTask?.cancel(); requestTask = nil; busy = false }
     }
-    private func send(claim: Bool) {
-        busy = true
-        Task {
-            defer { busy = false }
+    private func send(claim: Bool, orderNumber: String) {
+        guard !busy, !orderNumber.isEmpty, orderNumber == trimmedOrder else { return }
+        let identifier = UUID(); requestID = identifier; busy = true; result = ""
+        requestTask?.cancel()
+        requestTask = Task {
+            defer { if requestID == identifier { busy = false; requestTask = nil } }
             do {
-                let value = try await model.api.post(path: claim ? "/afdian/claim" : "/afdian/status", fields: ["out_trade_no": .string(order.trimmingCharacters(in: .whitespacesAndNewlines))])
-                let source = value.payload
-                let code = source["redeem_code"]?.stringValue ?? source["code_text"]?.stringValue ?? source["code"]?.stringValue
-                result = code.map { "兑换码：\($0)" } ?? source["message"]?.stringValue ?? value["message"]?.stringValue ?? (source["claimed"]?.boolValue == true ? "订单已发放，请查看我的兑换码" : (source["paid"]?.boolValue == true ? "订单已支付，可以领取" : "订单尚未支付"))
+                let value = try await model.api.post(path: claim ? "/afdian/claim" : "/afdian/status", fields: ["out_trade_no": .string(orderNumber)])
+                try Task.checkCancellation()
+                guard requestID == identifier, trimmedOrder == orderNumber else { return }
+                result = AfdianOrderResult(json: value).message
                 if claim { await model.refreshProfile() }
-            } catch { model.errorMessage = error.localizedDescription }
+            } catch is CancellationError {} catch {
+                guard requestID == identifier, trimmedOrder == orderNumber else { return }
+                model.errorMessage = error.localizedDescription
+            }
         }
     }
 }
@@ -248,17 +263,20 @@ private struct PaymentView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     let item: RemoteItem
-    @State private var order: JSONValue?
-    @State private var status = ""
+    @State private var flow = PaymentLifecycle()
     @State private var busy = false
     @State private var confirm = false
-    private var orderNumber: String { order?["order_no"]?.stringValue ?? "" }
-    private var paymentCode: String { order?["qr_code"]?.stringValue ?? order?["qr_url"]?.stringValue ?? order?["pay_url"]?.stringValue ?? "" }
+    @State private var visible = false
+    @State private var createTask: Task<Void, Never>?
+    @State private var manualTask: Task<Void, Never>?
+    @State private var checking: PaymentRequestContext?
+    private var orderNumber: String { flow.orderNumber }
+    private var paymentCode: String { flow.paymentCode }
     var body: some View {
         Form {
             Section(item.title) {
-                Button(order == nil ? "创建支付宝订单" : "重新创建订单") { confirm = true }.disabled(busy)
-                if let amount = order?["amount_yuan"]?.stringValue ?? order?["amount"]?.stringValue { LabeledContent("支付金额", value: "\(amount) 元") }
+                Button(flow.order == nil ? "创建支付宝订单" : "重新创建订单") { confirm = true }.disabled(busy)
+                if let amount = flow.order?["amount_yuan"]?.stringValue ?? flow.order?["amount"]?.stringValue { LabeledContent("支付金额", value: "\(amount) 元") }
                 if !orderNumber.isEmpty { LabeledContent("订单号", value: orderNumber).textSelection(.enabled) }
                 if !paymentCode.isEmpty {
                     PaymentCodeView(value: paymentCode)
@@ -266,43 +284,71 @@ private struct PaymentView: View {
                     Button("复制支付信息") { UIPasteboard.general.string = paymentCode }
                     Text("请使用支付宝支付；订单通常在 15 分钟内有效。").font(.caption).foregroundStyle(.secondary)
                 }
-                if !status.isEmpty { Text(status).textSelection(.enabled) }
-                if !orderNumber.isEmpty { Button("刷新支付状态") { Task { await check() } }.disabled(busy) }
+                if !flow.message.isEmpty { Text(flow.message).textSelection(.enabled) }
+                if flow.canCheck { Button("刷新支付状态") { refreshManually() }.disabled(busy || checking != nil) }
                 NavigationLink("我的兑换码") { RedeemCodesView() }
             }
         }
         .navigationTitle("支付宝订单")
-        .confirmationDialog("为此商品创建支付订单？", isPresented: $confirm, titleVisibility: .visible) { Button("确认创建") { create() } }
-        .task(id: "\(orderNumber)-\(scenePhase == .active)") {
-            guard !orderNumber.isEmpty, scenePhase == .active else { return }
-            while !Task.isCancelled && !["paid", "closed", "expired", "failed"].contains(order?["status"]?.stringValue ?? order?["state"]?.stringValue ?? "") {
+        .confirmationDialog("为此商品创建支付订单？", isPresented: $confirm, titleVisibility: .visible) { Button("确认创建") { create() } } message: {
+            Text("\(item.title) · 支付金额以创建后服务器返回的人民币金额为准；重建订单会停止旧订单查询。")
+        }
+        .onAppear { visible = true }
+        .onDisappear { visible = false; cancelRequests() }
+        .onChange(of: scenePhase) { phase in if phase != .active { cancelRequests() } }
+        .task(id: "\(flow.generation)-\(orderNumber)-\(scenePhase == .active)-\(visible)") {
+            guard visible, scenePhase == .active, flow.canCheck else { return }
+            while !Task.isCancelled && visible && scenePhase == .active && flow.canCheck {
+                if flow.expireIfNeeded() { return }
                 await check()
+                guard flow.canCheck, !Task.isCancelled else { return }
                 do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
             }
         }
     }
     private func create() {
-        busy = true
-        Task {
-            defer { busy = false }
-            do { order = try await model.api.post(path: "/pay/create", fields: ["item_id": .identifier(item.id)]).payload; status = "等待支付" }
-            catch { model.errorMessage = error.localizedDescription }
+        guard !busy, visible, scenePhase == .active else { return }
+        cancelRequests()
+        let generation = flow.beginCreation(); busy = true
+        createTask = Task {
+            defer { if flow.generation == generation { busy = false; createTask = nil } }
+            do {
+                let value = try await model.api.post(path: "/pay/create", fields: ["item_id": .identifier(item.id)])
+                try Task.checkCancellation()
+                guard flow.generation == generation, visible, scenePhase == .active else { return }
+                guard flow.acceptCreated(value, generation: generation) else { throw AppError.decoding("支付响应缺少订单号，请查看我的兑换码后重试") }
+            } catch is CancellationError {} catch {
+                guard flow.generation == generation else { return }
+                model.errorMessage = error.localizedDescription
+            }
         }
     }
+    private func refreshManually() {
+        guard visible, scenePhase == .active, flow.canCheck, checking == nil else { return }
+        manualTask?.cancel()
+        manualTask = Task { await check() }
+    }
+    private func cancelRequests() {
+        createTask?.cancel(); createTask = nil
+        manualTask?.cancel(); manualTask = nil
+        flow.invalidateRequests(); checking = nil; busy = false
+    }
     private func check() async {
+        guard visible, scenePhase == .active, flow.canCheck, checking == nil, !flow.expireIfNeeded() else { return }
+        let context = flow.context
+        checking = context
+        defer { if checking == context { checking = nil } }
         do {
-            let value = try await model.api.value(path: "/pay/status", query: [.init(name: "order_no", value: orderNumber)])
+            let value = try await model.api.value(path: "/pay/status", query: [.init(name: "order_no", value: context.orderNumber)])
             try Task.checkCancellation()
-            let source = value.payload
-            let state = source["status"]?.stringValue ?? source["state"]?.stringValue ?? "pending"
-            order = .object((order?.objectValue ?? [:]).merging(source.objectValue) { _, new in new })
-            switch state {
-            case "paid": status = "支付成功。兑换码：\(source["redeem_code"]?.stringValue ?? source["code_text"]?.stringValue ?? source["code"]?.stringValue ?? "生成中，请查看我的兑换码")"; await model.refreshProfile()
-            case "closed", "expired": status = "订单已关闭或过期，可以重新创建"
-            case "failed": status = "支付失败，请检查订单后重试"
-            default: status = "等待支付…"
+            guard visible, scenePhase == .active, flow.apply(value, to: context) else { return }
+            if (PaymentText.first(in: flow.order, keys: ["status", "state"]) ?? "").lowercased() == "paid" {
+                await model.refreshProfile()
             }
-        } catch is CancellationError {} catch { status = error.localizedDescription }
+        } catch is CancellationError {} catch {
+            guard visible, scenePhase == .active else { return }
+            flow.apply(error: error, to: context)
+        }
     }
 }
 
@@ -310,7 +356,15 @@ private struct PaymentCodeView: View {
     let value: String
     var body: some View {
         Group {
-            if let url = URL(string: value), ["http", "https"].contains(url.scheme ?? ""), ["png", "jpg", "jpeg"].contains(url.pathExtension.lowercased()) { AsyncImage(url: url) { image in image.resizable().scaledToFit() } placeholder: { ProgressView() } }
+            if let url = PaymentText.imageURL(for: value) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFit()
+                    case .failure: Text("支付二维码图片加载失败，请复制支付信息或重新创建订单").foregroundStyle(.secondary)
+                    default: ProgressView()
+                    }
+                }
+            }
             else if let image = qrImage { Image(uiImage: image).resizable().interpolation(.none).scaledToFit() }
         }.frame(maxWidth: .infinity, minHeight: 180, maxHeight: 260)
     }

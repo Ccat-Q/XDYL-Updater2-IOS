@@ -9,9 +9,10 @@ final class SessionStore: ObservableObject {
     @Published private(set) var username: String?
     private(set) var generation = UUID()
 
-    private let keychain = KeychainStore(service: "com.ccatq.xdylupdater2.session")
+    private let keychain: KeychainStore
 
-    init() {
+    init(keychainService: String = "com.ccatq.xdylupdater2.session") {
+        keychain = KeychainStore(service: keychainService)
         accessToken = keychain.read("accessToken")
         refreshToken = keychain.read("refreshToken")
         username = keychain.read("username")
@@ -19,13 +20,15 @@ final class SessionStore: ObservableObject {
 
     var isAuthenticated: Bool { !(accessToken ?? "").isEmpty }
 
-    func save(_ tokens: AuthTokens) {
-        if accessToken == nil { generation = UUID() }
+    /// A new login always changes the session identity; refreshing the same
+    /// identity keeps its generation so concurrent authenticated reads can retry.
+    func save(_ tokens: AuthTokens, isRefresh: Bool = false) {
+        if !isRefresh { generation = UUID() }
         accessToken = tokens.accessToken
-        refreshToken = tokens.refreshToken
-        username = tokens.username ?? username
+        refreshToken = tokens.refreshToken ?? (isRefresh ? refreshToken : nil)
+        username = tokens.username ?? (isRefresh ? username : nil)
         keychain.write(tokens.accessToken, key: "accessToken")
-        keychain.write(tokens.refreshToken, key: "refreshToken")
+        keychain.write(refreshToken, key: "refreshToken")
         keychain.write(username, key: "username")
     }
 

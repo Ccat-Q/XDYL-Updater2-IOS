@@ -6,6 +6,8 @@ import Foundation
 struct DuelPlayer: Identifiable, Equatable {
     let id: String
     let name: String
+    /// Display names are not necessarily Minecraft account identifiers.
+    let gameName: String
     let rating: Int
     let tier: String
     let tierIndex: Int
@@ -23,6 +25,8 @@ struct DuelPlayer: Identifiable, Equatable {
     init(json: JSONValue, fallbackID: String = UUID().uuidString) {
         id = json["id"]?.stringValue ?? json["username"]?.stringValue ?? json["player"]?.stringValue ?? json["name"]?.stringValue ?? fallbackID
         name = json["name"]?.stringValue ?? json["nickname"]?.stringValue ?? json["username"]?.stringValue ?? json["player"]?.stringValue ?? "未知玩家"
+        let account = json["game_name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        gameName = account.isEmpty ? name : account
         rating = Self.integer(json, "rating")
         tier = json["tier"]?.stringValue ?? "未定级"
         tierIndex = Self.integer(json, "tier_index")
@@ -37,6 +41,14 @@ struct DuelPlayer: Identifiable, Equatable {
         nextTier = json["next_tier"]?["tier"]?.stringValue
         nextTierNeed = json["next_tier"]?["need"]?.integer
     }
+
+    var streakText: String {
+        if streak > 0 { return "连胜 \(streak)" }
+        if streak < 0 { return "连败 \(streak.magnitude)" }
+        return "暂无连胜或连败"
+    }
+
+    var challengeFields: [String: JSONValue] { ["target": .string(gameName)] }
 
     private static func integer(_ json: JSONValue, _ key: String) -> Int { Int(json[key]?.stringValue ?? "") ?? 0 }
     private static func optionalInteger(_ json: JSONValue, _ keys: String...) -> Int? {
@@ -56,7 +68,7 @@ struct DuelInvite: Identifiable, Equatable {
         id = json["invite_id"]?.stringValue ?? json["id"]?.stringValue ?? "invite-\(index)"
         let prefix = isIncoming ? "from" : "to"
         var fields = json.objectValue
-        for key in ["name", "rating", "tier", "wins", "losses", "matches", "avatar"] {
+        for key in ["name", "game_name", "rating", "tier", "wins", "losses", "matches", "avatar"] {
             if let value = json["\(prefix)_\(key)"] { fields[key] = value }
         }
         player = DuelPlayer(json: json["player"] ?? json["from"] ?? json["opponent"] ?? .object(fields), fallbackID: id)
@@ -91,6 +103,10 @@ enum DuelMatchState: String, Equatable {
 
     init(raw: String?) { self = DuelMatchState(rawValue: raw?.lowercased() ?? "") ?? .unknown }
 
+    // Windows treats starts as a completed queue, not an active queue lock.
+    var permitsJoin: Bool { [DuelMatchState.idle, .starts, .expired, .declined].contains(self) }
+    var shouldPoll: Bool { [DuelMatchState.searching, .found, .starts].contains(self) }
+
     var title: String {
         switch self {
         case .idle: return "未在匹配"
@@ -118,7 +134,8 @@ struct DuelMatch: Equatable {
         let source = json["data"] ?? json
         state = DuelMatchState(raw: source["state"]?.stringValue)
         account = source["account"]?.stringValue ?? ""
-        timePreference = source["time_pref"]?.stringValue ?? "day"
+        let preference = source["time_pref"]?.stringValue ?? "day"
+        timePreference = ["day", "night", "random"].contains(preference) ? preference : "day"
         waitingSeconds = Int(source["waiting_seconds"]?.stringValue ?? "") ?? 0
         expiresIn = Int(source["expires_in"]?.stringValue ?? "") ?? 0
         meConfirmed = source["me_confirmed"]?.boolValue ?? false
@@ -128,6 +145,40 @@ struct DuelMatch: Equatable {
 
     static let idle = DuelMatch(json: .object(["state": .string("idle")]))
     var isActive: Bool { state == .searching || state == .found }
+
+    func restoredSelection(account: String, timePreference: String) -> (account: String, timePreference: String) {
+        guard isActive else { return (account, timePreference) }
+        return (self.account.isEmpty ? account : self.account, self.timePreference)
+    }
+}
+
+/// A late response may update only its original page flow, login session and
+/// endpoint revision. Kept independent of SwiftUI so response races are testable.
+struct DuelResponseGate {
+    struct Ticket: Equatable {
+        fileprivate let flow: UUID
+        fileprivate let session: UUID
+        fileprivate let channel: String
+        fileprivate let revision: Int
+    }
+
+    private(set) var flow = UUID()
+    private var revisions: [String: Int] = [:]
+
+    mutating func invalidate() {
+        flow = UUID()
+        revisions.removeAll()
+    }
+
+    mutating func begin(_ channel: String, session: UUID) -> Ticket {
+        let revision = (revisions[channel] ?? 0) + 1
+        revisions[channel] = revision
+        return Ticket(flow: flow, session: session, channel: channel, revision: revision)
+    }
+
+    func accepts(_ ticket: Ticket, session: UUID, cancelled: Bool = false) -> Bool {
+        !cancelled && ticket.flow == flow && ticket.session == session && revisions[ticket.channel] == ticket.revision
+    }
 }
 
 enum DuelPayload {

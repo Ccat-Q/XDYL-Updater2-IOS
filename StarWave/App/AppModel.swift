@@ -12,15 +12,29 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isBusy = false
     private var sessionObservation: AnyCancellable?
+    private var observedGeneration: UUID
+    private var authenticationCompletionTask: Task<Void, Never>?
 
     init() {
         let store = SessionStore()
         sessionStore = store
+        observedGeneration = store.generation
         api = APIClient(sessionStore: store)
         downloads = .shared
         sessionObservation = store.$accessToken.dropFirst().sink { [weak self] token in
-            self?.objectWillChange.send()
-            if token == nil { self?.profile = nil; self?.unreadCount = 0 }
+            guard let self else { return }
+            self.objectWillChange.send()
+            if self.observedGeneration != self.sessionStore.generation {
+                self.observedGeneration = self.sessionStore.generation
+                self.profile = nil; self.unreadCount = 0
+                self.authenticationCompletionTask?.cancel()
+                if let token, !token.isEmpty {
+                    // Session-scoped completion survives the login sheet closing,
+                    // but is cancelled when a different session replaces it.
+                    self.authenticationCompletionTask = Task { [weak self] in await self?.finishAuthentication() }
+                }
+            }
+            if token == nil { self.profile = nil; self.unreadCount = 0 }
         }
     }
 
@@ -32,10 +46,9 @@ final class AppModel: ObservableObject {
         await refreshUnreadCount()
     }
 
-    func login(account: String, password: String) async -> Bool {
+    func login(account: String, password: String, attempt: UUID? = nil) async -> Bool {
         await perform {
-            _ = try await self.api.login(account: account, password: password)
-            await self.refreshProfile()
+            _ = try await self.api.login(account: account, password: password, attempt: attempt)
         }
         return isAuthenticated
     }
@@ -53,12 +66,21 @@ final class AppModel: ObservableObject {
     }
 
     func refreshProfile() async {
-        do { profile = try await api.profile() }
+        let generation = sessionStore.generation
+        do { let value = try await api.profile(); guard generation == sessionStore.generation else { return }; profile = value }
         catch is CancellationError {} catch { errorMessage = error.localizedDescription }
     }
 
+    func finishAuthentication() async {
+        let generation = sessionStore.generation
+        await refreshProfile()
+        guard generation == sessionStore.generation, isAuthenticated, !Task.isCancelled else { return }
+        await api.notifyLogin(playerName: profile?.username ?? sessionStore.username)
+    }
+
     func refreshUnreadCount() async {
-        do { unreadCount = try await api.unreadNotificationCount() }
+        let generation = sessionStore.generation
+        do { let value = try await api.unreadNotificationCount(); guard generation == sessionStore.generation else { return }; unreadCount = value }
         catch { /* Notification pages remain available if the badge endpoint differs. */ }
     }
 
@@ -79,6 +101,7 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
+        authenticationCompletionTask?.cancel()
         sessionStore.clear()
         profile = nil
         unreadCount = 0
@@ -88,6 +111,6 @@ final class AppModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do { try await operation() }
-        catch { errorMessage = error.localizedDescription }
+        catch is CancellationError {} catch { errorMessage = error.localizedDescription }
     }
 }

@@ -180,6 +180,7 @@ private struct QQBindingView: View {
     @Environment(\.openURL) private var openURL
     @State private var sessionID = UUID().uuidString
     @State private var polling = false
+    @State private var bindingTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -193,28 +194,37 @@ private struct QQBindingView: View {
             .padding()
             .navigationTitle("绑定 QQ")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .onDisappear { bindingTask?.cancel(); bindingTask = nil }
         }
     }
 
     private func start() {
+        bindingTask?.cancel()
+        sessionID = UUID().uuidString
+        let id = sessionID
+        let generation = model.sessionStore.generation
         polling = true
-        Task {
+        bindingTask = Task {
             defer { polling = false }
             do {
-                openURL(try await model.api.startQQLogin(sessionID: sessionID, mode: "bind"))
-            } catch {
+                let url = try await model.api.startQQLogin(sessionID: id, mode: "bind")
+                try Task.checkCancellation()
+                guard model.sessionStore.generation == generation else { return }
+                openURL(url)
+            } catch is CancellationError { return } catch {
                 model.errorMessage = error.localizedDescription
                 return
             }
             for _ in 0..<45 {
+                guard !Task.isCancelled, model.sessionStore.generation == generation else { return }
                 do {
-                    if try await model.api.bindQQ(sessionID: sessionID) {
+                    if try await model.api.bindQQ(sessionID: id) {
                         await model.refreshProfile()
                         dismiss()
                         return
                     }
-                } catch { model.errorMessage = error.localizedDescription; return }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch is CancellationError { return } catch { model.errorMessage = error.localizedDescription; return }
             }
             model.errorMessage = "QQ 绑定已超时，请重试"
         }

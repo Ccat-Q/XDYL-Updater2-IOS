@@ -18,8 +18,9 @@ extension JSONValue {
 
 enum APIResponse {
     static func validate(status: Int, json: JSONValue?, allowQQBinding: Bool = false) throws {
-        let source = json?.payload
-        if allowQQBinding, (status == 302 || 200..<300 ~= status), (source?["temp_token"]?.stringValue ?? json?["temp_token"]?.stringValue) != nil { return }
+        let permitsBindingCode = json?["code"]?.integer.map { 200..<300 ~= $0 || $0 == 302 } ?? true
+        if allowQQBinding, let json, QQLoginState.bindingToken(in: json) != nil,
+           (status == 302 || (200..<300 ~= status && permitsBindingCode)) { return }
         let message = json?["message"]?.stringValue ?? json?["detail"]?.stringValue ?? json?["error"]?.stringValue ?? ""
         guard 200..<300 ~= status else { throw AppError.server(status: status, message: message) }
         if let code = json?["code"]?.integer, !(200..<300 ~= code) {
@@ -33,9 +34,14 @@ enum QQLoginState: Equatable {
     case authenticated(AuthTokens)
     case needsBinding(token: String, nickname: String)
 
+    static func bindingToken(in json: JSONValue) -> String? {
+        [json.payload["temp_token"]?.stringValue, json["temp_token"]?.stringValue]
+            .compactMap { $0 }.first { !$0.isEmpty }
+    }
+
     init(json: JSONValue) {
         let source = json.payload
-        if let token = source["temp_token"]?.stringValue ?? json["temp_token"]?.stringValue, !token.isEmpty {
+        if let token = Self.bindingToken(in: json) {
             self = .needsBinding(token: token, nickname: source["qq_nickname"]?.stringValue ?? json["qq_nickname"]?.stringValue ?? "QQ 用户")
         } else if let tokens = AuthTokens(json: json) { self = .authenticated(tokens) }
         else { self = .waiting }

@@ -18,6 +18,18 @@ struct DownloadRecord: Identifiable, Codable, Equatable {
     var taskIdentifier: Int?
 }
 
+enum DownloadRecordDeletion {
+    static func removeFile(at url: URL, remove: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws {
+        do { try remove(url) }
+        catch {
+            let cocoa = error as NSError
+            // An already removed file should not make a stale record undeletable.
+            guard cocoa.domain == NSCocoaErrorDomain,
+                  [CocoaError.fileNoSuchFile.rawValue, CocoaError.fileReadNoSuchFile.rawValue].contains(cocoa.code) else { throw error }
+        }
+    }
+}
+
 final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
 
@@ -76,11 +88,18 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func delete(_ record: DownloadRecord) {
-        session.getAllTasks { tasks in
-            tasks.filter { $0.taskDescription == record.id.uuidString || $0.taskIdentifier == record.taskIdentifier }.forEach { $0.cancel() }
+        guard let current = records.first(where: { $0.id == record.id }) else { return }
+        do {
+            if let localURL = current.localURL { try DownloadRecordDeletion.removeFile(at: localURL) }
+        } catch {
+            update(current.id) { $0.message = "删除文件失败，已保留下载记录：\(error.localizedDescription)" }
+            persist()
+            return
         }
-        if let localURL = record.localURL { try? FileManager.default.removeItem(at: localURL) }
-        records.removeAll { $0.id == record.id }
+        session.getAllTasks { tasks in
+            tasks.filter { $0.taskDescription == current.id.uuidString || $0.taskIdentifier == current.taskIdentifier }.forEach { $0.cancel() }
+        }
+        records.removeAll { $0.id == current.id }
         persist()
     }
 
