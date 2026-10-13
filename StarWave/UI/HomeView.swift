@@ -15,7 +15,7 @@ struct HomeView: View {
                 SectionCard(title: "服务器状态", icon: "dot.radiowaves.left.and.right") {
                     if serverStatus.isEmpty { Text("暂无状态数据").foregroundStyle(.secondary) }
                     ForEach(serverStatus) { item in
-                        NavigationLink { RemoteItemDetailView(title: "服务器状态", item: item) } label: { RemoteItemRow(item: item) }
+                            NavigationLink { PlayerInfoView(player: item.raw["name"]?.stringValue ?? item.title) } label: { RemoteItemRow(item: item) }
                     }
                 }
                 SectionCard(title: "公告", icon: "megaphone") {
@@ -101,7 +101,7 @@ struct RemoteItemRow: View {
             if !item.detail.isEmpty, item.detail != item.title, item.detail != item.subtitle {
                 RichContentView(item.detail, lineLimit: 4)
             }
-            ItemImagesView(item: item, height: 150)
+            ItemImagesView(item: item, height: 150, includeContentImages: false)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -117,7 +117,7 @@ struct RemoteItemDetailView: View {
                 StyledTitleText(item.title, colorHint: item.raw["color"]?.stringValue).font(.title3.bold())
                 if !item.subtitle.isEmpty { Text(item.subtitle).foregroundStyle(.secondary) }
                 if !item.detail.isEmpty, item.detail != item.subtitle { RichContentView(item.detail) }
-                ItemImagesView(item: item, height: 240)
+                ItemImagesView(item: item, height: 240, includeContentImages: false)
                 if let userTitle = item.raw["user_title"]?.stringValue, !userTitle.isEmpty {
                     LabeledContent("称号") { StyledTitleText(userTitle) }
                 }
@@ -160,7 +160,7 @@ enum TitleColor {
 
     static func segments(in value: String, fallback: Color?) -> [Segment] {
         let defaultColor = fallback ?? .primary
-        guard let expression = try? NSRegularExpression(pattern: #"&#([0-9A-Fa-f]{6})"#) else {
+        guard let expression = try? NSRegularExpression(pattern: #"&#([0-9A-Fa-f]{6})|&([0-9A-Fa-frR])"#) else {
             return [Segment(text: value, color: defaultColor)]
         }
         let matches = expression.matches(in: value, range: NSRange(value.startIndex..., in: value))
@@ -170,10 +170,15 @@ enum TitleColor {
         var cursor = value.startIndex
         var activeColor = defaultColor
         for match in matches {
-            guard let tokenRange = Range(match.range, in: value), let hexRange = Range(match.range(at: 1), in: value) else { continue }
+            guard let tokenRange = Range(match.range, in: value) else { continue }
             let text = String(value[cursor..<tokenRange.lowerBound])
             if !text.isEmpty { result.append(Segment(text: text, color: activeColor)) }
-            activeColor = color(from: String(value[hexRange])) ?? activeColor
+            if let hexRange = Range(match.range(at: 1), in: value) { activeColor = color(from: String(value[hexRange])) ?? activeColor }
+            else if let shortRange = Range(match.range(at: 2), in: value) {
+                let code = String(value[shortRange]).lowercased()
+                let palette = ["0":"000000", "1":"0000AA", "2":"00AA00", "3":"00AAAA", "4":"AA0000", "5":"AA00AA", "6":"FFAA00", "7":"AAAAAA", "8":"555555", "9":"5555FF", "a":"55FF55", "b":"55FFFF", "c":"FF5555", "d":"FF55FF", "e":"FFFF55", "f":"FFFFFF"]
+                activeColor = code == "r" ? defaultColor : (color(from: palette[code]) ?? activeColor)
+            }
             cursor = tokenRange.upperBound
         }
         let trailing = String(value[cursor...])
@@ -182,13 +187,13 @@ enum TitleColor {
     }
 
     static func removingTokens(from value: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: #"&#[0-9A-Fa-f]{6}"#) else { return value }
+        guard let expression = try? NSRegularExpression(pattern: #"&#[0-9A-Fa-f]{6}|&[0-9A-Fa-frR]"#) else { return value }
         let range = NSRange(value.startIndex..., in: value)
         return expression.stringByReplacingMatches(in: value, range: range, withTemplate: "")
     }
 
     static func visibleCharacterCount(in value: String) -> Int {
-        removingTokens(from: value).count
+        removingTokens(from: value).utf16.count
     }
 
     static func color(from value: String?) -> Color? {
@@ -210,15 +215,14 @@ struct RichContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(cleanText).font(.subheadline).foregroundStyle(.primary).lineLimit(lineLimit)
-            ForEach(markdownImageURLs, id: \.absoluteString) { url in
-                RemoteImageView(url: url, height: 220)
+            ForEach(Array(ContentURLs.blocks(in: value).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case let .text(text): Text(text).font(.subheadline).foregroundStyle(.primary).lineLimit(lineLimit)
+                case let .image(url): RemoteImageView(url: url, height: 220)
+                }
             }
         }
     }
-
-    private var markdownImageURLs: [URL] { ContentURLs.markdownImages(in: value) }
-    private var cleanText: String { ContentURLs.removingMarkdownImages(from: value) }
 }
 
 struct ItemImagesView: View {
@@ -297,21 +301,45 @@ private struct ImagePreviewView: View {
 }
 
 enum ContentURLs {
+    enum Block { case text(String), image(URL) }
+
+    static func blocks(in value: String) -> [Block] {
+        let pattern = #"!\[[^\]]*\]\(([^)]+)\)|<img\b[^>]*\bsrc\s*=\s*['\x22]([^'\x22]+)['\x22][^>]*>"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [.text(value)] }
+        var blocks: [Block] = []
+        var cursor = value.startIndex
+        for match in expression.matches(in: value, range: NSRange(value.startIndex..., in: value)) {
+            guard let range = Range(match.range, in: value) else { continue }
+            let text = String(value[cursor..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { blocks.append(.text(text)) }
+            let capture = match.range(at: 1).location == NSNotFound ? match.range(at: 2) : match.range(at: 1)
+            if let capture = Range(capture, in: value), let url = resolve(String(value[capture])) { blocks.append(.image(url)) }
+            cursor = range.upperBound
+        }
+        let tail = String(value[cursor...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { blocks.append(.text(tail)) }
+        return blocks
+    }
+
+    static func unique(_ values: [URL]) -> [URL] {
+        var seen: Set<URL> = []
+        return values.filter { seen.insert($0).inserted }
+    }
     static func images(in value: JSONValue, includeContentImages: Bool = true) -> [URL] {
         let explicit = ["image", "image_url", "cover", "cover_url", "icon"]
             .compactMap { resolve(value[$0]?.stringValue) }
         let collections = ["images", "image_urls", "photos", "attachments", "files"]
             .flatMap { imageURLs(in: value[$0]) }
         guard includeContentImages else {
-            return Array(Set(explicit + collections)).sorted { $0.absoluteString < $1.absoluteString }
+            return unique(explicit + collections)
         }
         let content = value["content"]?.stringValue ?? value["detail"]?.stringValue ?? ""
         let embedded = markdownImages(in: content) + htmlImages(in: content)
-        return Array(Set(explicit + collections + embedded)).sorted { $0.absoluteString < $1.absoluteString }
+        return unique(explicit + collections + embedded)
     }
 
     static func markdownImages(in value: String) -> [URL] {
-        guard let expression = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\(([^)\s]+)\)"#) else { return [] }
+        guard let expression = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\(([^)]+)\)"#) else { return [] }
         let range = NSRange(value.startIndex..., in: value)
         return expression.matches(in: value, range: range).compactMap { match in
             guard let range = Range(match.range(at: 1), in: value) else { return nil }
@@ -345,7 +373,7 @@ enum ContentURLs {
     static func resolve(_ value: String?) -> URL? {
         guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         value = value.replacingOccurrences(of: "&amp;", with: "&")
-        if let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) { return url }
+        if let url = URL(string: value), let scheme = url.scheme?.lowercased() { return ["http", "https"].contains(scheme) ? url : nil }
         return URL(string: value, relativeTo: AppEnvironment.webBaseURL)?.absoluteURL
     }
 }

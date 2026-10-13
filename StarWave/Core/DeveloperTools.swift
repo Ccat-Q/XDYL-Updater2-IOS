@@ -35,15 +35,17 @@ struct DeveloperKnownRoute: Identifiable, Hashable {
     let requiresAuthentication: Bool
     let baseURL: String
     let defaultQuery: String
+    let defaultBody: String
 
-    init(_ group: String, _ title: String, _ path: String, _ method: DeveloperHTTPMethod = .get, authenticated: Bool = true, baseURL: String = AppEnvironment.apiBaseURL.absoluteString, query: String = "") {
+    init(_ group: String, _ title: String, _ path: String, _ method: DeveloperHTTPMethod = .get, authenticated: Bool = true, baseURL: String = AppEnvironment.apiBaseURL.absoluteString, query: String = "", body: String = "{}") {
         self.group = group; self.title = title; self.path = path; self.method = method
         requiresAuthentication = authenticated; self.baseURL = baseURL; defaultQuery = query
+        defaultBody = body
     }
 
     var id: String { "\(method.rawValue) \(baseURL)\(path)" }
 
-    static let catalog: [DeveloperKnownRoute] = [
+    static var catalog: [DeveloperKnownRoute] { [
         .init("认证", "登录", "/login", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
         .init("认证", "刷新令牌", "/refresh", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
         .init("认证", "注册", "/register", .post, authenticated: false, baseURL: AppEnvironment.webBaseURL.absoluteString),
@@ -56,7 +58,13 @@ struct DeveloperKnownRoute: Identifiable, Hashable {
         .init("用户", "个人资料", "/user/profile"), .init("用户", "更新资料", "/user/profile", .post),
         .init("用户", "上传头像", "/user/avatar", .post), .init("用户", "修改密码", "/user/password", .post),
         .init("用户", "修改用户名", "/user/change-username", .post), .init("用户", "绑定 QQ", "/user/bind-qq", .post),
-        .init("用户", "解绑 QQ", "/user/unbind-qq", .post), .init("用户", "我的物品", "/user/items"), .init("用户", "表情", "/user/emojis"), .init("用户", "上传 YSM 皮肤", "/upload_v2", .post),
+        .init("用户", "解绑 QQ", "/user/unbind-qq", .post), .init("用户", "我的物品", "/user/items"), .init("用户", "表情", "/user/emojis"),
+        .init("用户", "上传表情", "/user/emojis", .post),
+        .init("用户", "绑定游戏账号列表", "/user/game-bindings"),
+        .init("用户", "添加游戏账号", "/user/game-bindings", .post, body: #"{"game_name":"","uuid":""}"#),
+        .init("用户", "删除游戏账号绑定", "/user/game-bindings/delete", .post, body: #"{"id":0}"#),
+        .init("用户", "玩家公开资料", "/player/info/{player}"),
+        .init("认证", "QQ 关联已有账号", "/qq/bind", .post, authenticated: false, body: #"{"temp_token":"","account":"","password":""}"#),
         .init("社区", "论坛分类", "/forum/categories"), .init("社区", "帖子列表", "/forum/posts", query: "page=1"),
         .init("社区", "发布帖子", "/forum/post", .post), .init("社区", "帖子详情", "/forum/post/{id}"),
         .init("社区", "回复帖子", "/forum/post/{id}/reply", .post), .init("社区", "点赞帖子", "/forum/post/{id}/like", .post),
@@ -64,7 +72,7 @@ struct DeveloperKnownRoute: Identifiable, Hashable {
         .init("游戏", "周目", "/seasons"), .init("游戏", "在线玩家", "/server/players"), .init("游戏", "喵币排行", "/rank/coins"),
         .init("游戏", "在线排行", "/rank/playtime"), .init("游戏", "游戏奖励", "/playtime/rewards"),
         .init("游戏", "领取游戏奖励", "/playtime/rewards/claim", .post), .init("游戏", "任务", "/tasks"),
-        .init("游戏", "领取任务", "/tasks/{id}/claim", .post), .init("游戏", "投票列表", "/polls"), .init("游戏", "投票", "/vote", .post),
+        .init("游戏", "领取任务", "/tasks/{id}/claim", .post), .init("游戏", "投票列表", "/polls"), .init("游戏", "投票", "/polls/{id}/vote", .post, body: #"{"option_id":0}"#),
         .init("决斗场", "我的排位", "/pvp/me"), .init("决斗场", "在线玩家", "/pvp/online"),
         .init("决斗场", "收到的挑战", "/pvp/incoming"), .init("决斗场", "游戏账号", "/pvp/accounts"),
         .init("决斗场", "当前匹配", "/pvp/match/status"), .init("决斗场", "排行榜", "/pvp/rank", query: "limit=50"),
@@ -73,14 +81,24 @@ struct DeveloperKnownRoute: Identifiable, Hashable {
         .init("决斗场", "取消匹配", "/pvp/match/leave", .post),
         .init("商城", "商城物品", "/shop/items"), .init("商城", "购买商品", "/shop/buy", .post),
         .init("商城", "称号目录", "/titles/catalog"), .init("商城", "我的称号", "/titles/mine"),
-        .init("商城", "购买称号", "/titles/buy", .post), .init("商城", "佩戴称号", "/titles/wear", .post),
-        .init("商城", "兑换比例", "/redeem/rate"), .init("商城", "兑换游戏币", "/redeem/game-coins", .post),
+        .init("商城", "购买称号", "/titles/buy", .post, body: #"{"title":""}"#), .init("商城", "佩戴称号", "/titles/wear", .post, body: #"{"title":""}"#),
+        .init("商城", "兑换比例", "/redeem/rate"), .init("商城", "兑换游戏币", "/redeem/game-coins", .post, body: #"{"coins":0}"#),
+        .init("市场", "市场行情", "/market/preview"), .init("市场", "物品价格历史", "/market/history/{identifier}"),
+        .init("支付", "创建支付宝订单", "/pay/create", .post, body: #"{"item_id":0}"#),
+        .init("支付", "支付状态", "/pay/status", query: "order_no="),
+        .init("支付", "爱发电订单状态", "/afdian/status", .post, body: #"{"out_trade_no":""}"#),
+        .init("支付", "领取爱发电订单", "/afdian/claim", .post, body: #"{"out_trade_no":""}"#),
+        .init("YSM", "上传 YSM 皮肤", "/upload_v2", .post, authenticated: false, baseURL: AppEnvironment.ysmBaseURL.absoluteString),
+        .init("YSM", "上传历史", "/history", authenticated: false, baseURL: AppEnvironment.ysmBaseURL.absoluteString, query: "player="),
+        .init("YSM", "重复文件授权", "/confirm_duplicate", .post, authenticated: false, baseURL: AppEnvironment.ysmBaseURL.absoluteString, body: #"{"code":"","player_name":"","original_model_id":""}"#),
         .init("内容", "公告", "/announcements"), .init("内容", "通知", "/notifications"), .init("内容", "未读通知数", "/notifications/unread"),
-        .init("内容", "全部通知已读", "/notifications/read", .post), .init("内容", "意见箱", "/suggestions"),
+        .init("内容", "全部通知已读", "/notifications/read", .post, body: #"{"all":true}"#), .init("内容", "意见箱", "/suggestions"),
+        .init("内容", "删除意见", "/suggestions/{id}", .delete),
         .init("内容", "提交意见", "/suggestions", .post), .init("内容", "纪念堂", "/memorials"),
         .init("更新", "最新更新", "/update/latest"), .init("更新", "整合包链接", "/update/pack-links"), .init("更新", "模组列表", "/mods/list"),
+        .init("更新", "整合包直链文件", "/update/pack-files"),
         .init("资源", "公开模组清单", "/mods.json", authenticated: false, baseURL: AppEnvironment.modsBaseURL.absoluteString)
-    ]
+    ] }
 }
 
 struct DeveloperSession: Codable, Identifiable, Equatable {
@@ -263,7 +281,8 @@ final class DeveloperRequestExecutor {
             if let upload {
                 let boundary = "StarWave-Debug-\(UUID().uuidString)"
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                request.httpBody = multipart(data: upload, field: draft.uploadField, filename: uploadFilename ?? "upload.bin", boundary: boundary)
+                let fields = try JSONDecoder().decode(JSONValue.self, from: Data(draft.jsonBody.utf8)).objectValue
+                request.httpBody = try multipart(data: upload, field: draft.uploadField, filename: uploadFilename ?? "upload.bin", boundary: boundary, fields: fields)
             } else if draft.method != .get {
                 let body = draft.jsonBody.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !body.isEmpty { _ = try JSONSerialization.jsonObject(with: Data(body.utf8)); request.httpBody = Data(body.utf8) }
@@ -308,11 +327,16 @@ final class DeveloperRequestExecutor {
         return components
     }
 
-    private func multipart(data: Data, field: String, filename: String, boundary: String) -> Data {
-        var body = Data("--\(boundary)\r\n".utf8)
-        body.append(Data("Content-Disposition: form-data; name=\"\(field)\"; filename=\"\(filename)\"\r\n".utf8))
-        body.append(Data("Content-Type: application/octet-stream\r\n\r\n".utf8))
-        body.append(data)
+    private func multipart(data: Data, field: String, filename: String, boundary: String, fields: [String: JSONValue]) throws -> Data {
+        let image = ["image", "avatar", "emoji"].contains(field) ? try ImageUpload.prepare(data: data, filename: filename) : nil
+        var body = Data()
+        for key in fields.keys.sorted() {
+            if let value = fields[key]?.stringValue { body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n".utf8)) }
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"\(field)\"; filename=\"\(image?.filename ?? filename)\"\r\n".utf8))
+        body.append(Data("Content-Type: \(image?.mimeType ?? "application/octet-stream")\r\n\r\n".utf8))
+        body.append(image?.data ?? data)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         return body
     }

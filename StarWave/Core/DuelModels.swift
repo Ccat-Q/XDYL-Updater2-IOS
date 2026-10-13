@@ -15,6 +15,10 @@ struct DuelPlayer: Identifiable, Equatable {
     let rank: Int?
     let peakRating: Int?
     let avatarURL: URL?
+    let streak: Int
+    let totalPlayers: Int?
+    let nextTier: String?
+    let nextTierNeed: Int?
 
     init(json: JSONValue, fallbackID: String = UUID().uuidString) {
         id = json["id"]?.stringValue ?? json["username"]?.stringValue ?? json["player"]?.stringValue ?? json["name"]?.stringValue ?? fallbackID
@@ -28,6 +32,10 @@ struct DuelPlayer: Identifiable, Equatable {
         rank = Self.optionalInteger(json, "rank", "rank_position")
         peakRating = Self.optionalInteger(json, "peak_rating")
         avatarURL = AppEnvironment.avatarURL(from: json["avatar"]?.stringValue ?? json["avatar_url"]?.stringValue)
+        streak = Self.integer(json, "streak")
+        totalPlayers = Self.optionalInteger(json, "total_players")
+        nextTier = json["next_tier"]?["tier"]?.stringValue
+        nextTierNeed = json["next_tier"]?["need"]?.integer
     }
 
     private static func integer(_ json: JSONValue, _ key: String) -> Int { Int(json[key]?.stringValue ?? "") ?? 0 }
@@ -42,13 +50,20 @@ struct DuelInvite: Identifiable, Equatable {
     let status: String
     let expiresIn: Int?
     let isIncoming: Bool
+    let expiresAt: Date?
 
     init(json: JSONValue, isIncoming: Bool, index: Int) {
         id = json["invite_id"]?.stringValue ?? json["id"]?.stringValue ?? "invite-\(index)"
-        player = DuelPlayer(json: json["player"] ?? json["from"] ?? json["opponent"] ?? json, fallbackID: id)
+        let prefix = isIncoming ? "from" : "to"
+        var fields = json.objectValue
+        for key in ["name", "rating", "tier", "wins", "losses", "matches", "avatar"] {
+            if let value = json["\(prefix)_\(key)"] { fields[key] = value }
+        }
+        player = DuelPlayer(json: json["player"] ?? json["from"] ?? json["opponent"] ?? .object(fields), fallbackID: id)
         status = json["status"]?.stringValue ?? "pending"
         expiresIn = Int(json["expires_in"]?.stringValue ?? json["remaining_seconds"]?.stringValue ?? "")
         self.isIncoming = isIncoming
+        expiresAt = DateParsing.parse(json["expires_at"]?.stringValue)
     }
 }
 
@@ -64,17 +79,17 @@ struct DuelRecentMatch: Identifiable, Equatable {
         id = json["id"]?.stringValue ?? json["match_id"]?.stringValue ?? "recent-\(index)"
         opponent = json["opponent"]?["name"]?.stringValue ?? json["opponent_name"]?.stringValue ?? json["opponent"]?.stringValue ?? "未知对手"
         let result = json["result"]?.stringValue?.lowercased() ?? json["status"]?.stringValue?.lowercased()
-        won = result.map { ["win", "won", "胜"].contains($0) }
+        won = json["win"]?.boolValue ?? result.flatMap { ["win", "won", "胜"].contains($0) ? true : (["loss", "lost", "负"].contains($0) ? false : nil) }
         ratingChange = Int(json["rating_change"]?.stringValue ?? json["delta"]?.stringValue ?? "")
         ratingAfter = Int(json["rating_after"]?.stringValue ?? json["my_rating_after"]?.stringValue ?? "")
-        time = json["created_at"]?.stringValue ?? json["time"]?.stringValue ?? ""
+        time = json["reported_at"]?.stringValue ?? json["created_at"]?.stringValue ?? json["time"]?.stringValue ?? ""
     }
 }
 
 enum DuelMatchState: String, Equatable {
-    case idle, searching, found, starts, expired, declined
+    case idle, searching, found, starts, expired, declined, unknown
 
-    init(raw: String?) { self = DuelMatchState(rawValue: raw?.lowercased() ?? "") ?? .idle }
+    init(raw: String?) { self = DuelMatchState(rawValue: raw?.lowercased() ?? "") ?? .unknown }
 
     var title: String {
         switch self {
@@ -84,6 +99,7 @@ enum DuelMatchState: String, Equatable {
         case .starts: return "即将开始"
         case .expired: return "匹配已超时"
         case .declined: return "匹配已取消"
+        case .unknown: return "状态暂不可用，请刷新"
         }
     }
 }
@@ -110,7 +126,7 @@ struct DuelMatch: Equatable {
         opponent = source["opponent"].map { DuelPlayer(json: $0) }
     }
 
-    static let idle = DuelMatch(json: .object([:]))
+    static let idle = DuelMatch(json: .object(["state": .string("idle")]))
     var isActive: Bool { state == .searching || state == .found }
 }
 
@@ -125,7 +141,7 @@ enum DuelPayload {
 
     static func accounts(_ value: JSONValue) -> [String] {
         list(value, keys: ["accounts", "players", "data"]).compactMap {
-            $0.stringValue ?? $0["account"]?.stringValue ?? $0["name"]?.stringValue ?? $0["player_name"]?.stringValue
+            $0.stringValue ?? $0["game_name"]?.stringValue ?? $0["account"]?.stringValue ?? $0["name"]?.stringValue ?? $0["player_name"]?.stringValue
         }
     }
 
@@ -148,5 +164,17 @@ enum DuelPayload {
             result = source.arrayValue.enumerated().map { DuelInvite(json: $0.element, isIncoming: true, index: $0.offset) }
         }
         return result
+    }
+}
+
+enum DateParsing {
+    static func parse(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: value) { return date }
+        iso.formatOptions.insert(.withFractionalSeconds)
+        if let date = iso.date(from: value) { return date }
+        let sql = DateFormatter(); sql.locale = Locale(identifier: "en_US_POSIX"); sql.timeZone = TimeZone(secondsFromGMT: 0); sql.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return sql.date(from: value)
     }
 }

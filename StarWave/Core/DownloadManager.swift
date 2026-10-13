@@ -34,7 +34,6 @@ final class DownloadManager: NSObject, ObservableObject {
             : UserDefaults.standard.bool(forKey: "allowCellularDownloads")
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
-        queue.underlyingQueue = .main
         return URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }()
 
@@ -42,6 +41,7 @@ final class DownloadManager: NSObject, ObservableObject {
         super.init()
         restore()
         _ = session
+        reconcileTasks()
     }
 
     var documentsDirectory: URL {
@@ -67,23 +67,53 @@ final class DownloadManager: NSObject, ObservableObject {
             persist()
             return
         }
-        let task = session.downloadTask(with: url)
-        update(record.id) { item in
-            item.taskIdentifier = task.taskIdentifier
-            item.state = .downloading
+        start(record)
+    }
+
+    func retry(_ record: DownloadRecord) {
+        guard records.contains(where: { $0.id == record.id && $0.state == .failed }), AppEnvironment.permitsDownload(from: record.remoteURL) else { return }
+        start(record)
+    }
+
+    func delete(_ record: DownloadRecord) {
+        session.getAllTasks { tasks in
+            tasks.filter { $0.taskDescription == record.id.uuidString || $0.taskIdentifier == record.taskIdentifier }.forEach { $0.cancel() }
         }
+        if let localURL = record.localURL { try? FileManager.default.removeItem(at: localURL) }
+        records.removeAll { $0.id == record.id }
+        persist()
+    }
+
+    private func start(_ record: DownloadRecord) {
+        let task = session.downloadTask(with: record.remoteURL)
+        task.taskDescription = record.id.uuidString
+        update(record.id) { $0.taskIdentifier = task.taskIdentifier; $0.state = .downloading; $0.progress = 0; $0.message = nil; $0.localURL = nil }
         persist()
         task.resume()
     }
 
-    func retry(_ record: DownloadRecord) {
-        enqueue(url: record.remoteURL, filename: record.filename, expectedSHA256: record.expectedSHA256)
+    private func reconcileTasks() {
+        session.getAllTasks { [weak self] tasks in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                for task in tasks {
+                    guard let index = self.records.firstIndex(where: { $0.id.uuidString == task.taskDescription || $0.taskIdentifier == task.taskIdentifier }) else { task.cancel(); continue }
+                    if self.records[index].state != .completed { self.records[index].state = .downloading; self.records[index].taskIdentifier = task.taskIdentifier }
+                }
+                for index in self.records.indices where self.records[index].state == .downloading || self.records[index].state == .verifying || self.records[index].state == .queued {
+                    if !tasks.contains(where: { $0.taskIdentifier == self.records[index].taskIdentifier }) {
+                        self.records[index].state = .failed; self.records[index].taskIdentifier = nil
+                        self.records[index].message = "下载已中断，可以重试"
+                    }
+                }
+                self.persist()
+            }
+        }
     }
 
-    func delete(_ record: DownloadRecord) {
-        if let localURL = record.localURL { try? FileManager.default.removeItem(at: localURL) }
-        records.removeAll { $0.id == record.id }
-        persist()
+    private func onMain<T>(_ action: () -> T) -> T {
+        if Thread.isMainThread { return action() }
+        return DispatchQueue.main.sync(execute: action)
     }
 
     func handleBackgroundEvents(completionHandler: @escaping () -> Void) {
@@ -96,7 +126,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func record(for task: URLSessionTask) -> DownloadRecord? {
-        records.first { $0.taskIdentifier == task.taskIdentifier }
+        records.first { $0.id.uuidString == task.taskDescription || $0.taskIdentifier == task.taskIdentifier }
     }
 
     private func sanitized(_ filename: String) -> String {
@@ -110,7 +140,7 @@ final class DownloadManager: NSObject, ObservableObject {
         guard FileManager.default.fileExists(atPath: base.path) else { return base }
         let extensionName = base.pathExtension
         let stem = base.deletingPathExtension().lastPathComponent
-        let alternate = "\(stem)-\(Int(Date().timeIntervalSince1970))" + (extensionName.isEmpty ? "" : ".\(extensionName)")
+        let alternate = "\(stem)-\(UUID().uuidString)" + (extensionName.isEmpty ? "" : ".\(extensionName)")
         return documentsDirectory.appendingPathComponent(alternate)
     }
 
@@ -121,7 +151,7 @@ final class DownloadManager: NSObject, ObservableObject {
         try FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
         let destination = uniqueDestination(for: filename)
         let staging = documentsDirectory.appendingPathComponent(".\(UUID().uuidString).partial")
-        FileManager.default.createFile(atPath: staging.path, contents: nil)
+        guard FileManager.default.createFile(atPath: staging.path, contents: nil) else { throw AppError.transport("无法创建暂存文件，请检查可用存储空间") }
 
         do {
             let input = try FileHandle(forReadingFrom: source)
@@ -146,8 +176,8 @@ final class DownloadManager: NSObject, ObservableObject {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while autoreleasepool(invoking: {
-            let data = try? handle.read(upToCount: 1_048_576)
+        while try autoreleasepool(invoking: {
+            let data = try handle.read(upToCount: 1_048_576)
             guard let data, !data.isEmpty else { return false }
             hasher.update(data: data)
             return true
@@ -165,9 +195,9 @@ final class DownloadManager: NSObject, ObservableObject {
               let restored = try? JSONDecoder().decode([DownloadRecord].self, from: data) else { return }
         records = restored.map { record in
             var item = record
-            if item.state == .downloading || item.state == .verifying {
-                item.state = .failed
-                item.message = "上次下载被中断，请重试"
+            if let local = item.localURL {
+                item.localURL = documentsDirectory.appendingPathComponent(local.lastPathComponent)
+                if !FileManager.default.fileExists(atPath: item.localURL!.path) { item.state = .failed; item.message = "文件已移除，请重新下载" }
             }
             return item
         }
@@ -176,45 +206,51 @@ final class DownloadManager: NSObject, ObservableObject {
 
 extension DownloadManager: URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let record = record(for: downloadTask) else { return }
-        update(record.id) { $0.state = .verifying }
+        guard let record = onMain({ self.record(for: downloadTask) }) else { return }
+        onMain { update(record.id) { $0.state = .verifying } }
         do {
+            guard let response = downloadTask.response as? HTTPURLResponse else { throw AppError.invalidResponse }
+            guard 200..<300 ~= response.statusCode else { throw AppError.server(status: response.statusCode, message: "资源下载失败（HTTP \(response.statusCode)），请刷新资源列表") }
             if let expected = record.expectedSHA256, !expected.isEmpty {
                 guard try sha256(at: location).lowercased() == expected else { throw AppError.hashMismatch }
             }
             let destination = try storeDownloadedFile(from: location, as: record.filename)
             try? FileManager.default.removeItem(at: location)
-            update(record.id) {
-                $0.state = .completed
-                $0.progress = 1
-                $0.localURL = destination
-                $0.message = "已保存到“文件”App"
+            let retained = onMain { () -> Bool in
+                guard records.contains(where: { $0.id == record.id }) else { return false }
+                update(record.id) {
+                    $0.state = .completed; $0.progress = 1; $0.localURL = destination
+                    $0.message = "已保存到“文件”App"; $0.taskIdentifier = nil
+                }
+                return true
             }
+            if !retained { try? FileManager.default.removeItem(at: destination) }
         } catch {
-            update(record.id) {
-                $0.state = .failed
-                $0.message = "无法保存 \(record.filename)：\(error.localizedDescription)"
+            onMain {
+                update(record.id) { $0.state = .failed; $0.taskIdentifier = nil; $0.message = error.localizedDescription }
             }
         }
-        persist()
+        onMain { persist() }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard let record = record(for: downloadTask), totalBytesExpectedToWrite > 0 else { return }
-        update(record.id) { $0.progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) }
+        guard totalBytesExpectedToWrite > 0 else { return }
+        onMain {
+            guard let record = record(for: downloadTask) else { return }
+            update(record.id) { $0.progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) }
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error, let record = record(for: task) else { return }
-        update(record.id) {
-            $0.state = .failed
-            $0.message = error.localizedDescription
+        guard let error else { return }
+        onMain {
+            guard let record = record(for: task) else { return }
+            update(record.id) { $0.state = .failed; $0.taskIdentifier = nil; $0.message = error.localizedDescription }
+            persist()
         }
-        persist()
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        backgroundCompletionHandler?()
-        backgroundCompletionHandler = nil
+        onMain { backgroundCompletionHandler?(); backgroundCompletionHandler = nil }
     }
 }

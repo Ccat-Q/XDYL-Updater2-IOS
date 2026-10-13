@@ -27,13 +27,16 @@ struct ProfileView: View {
                 }
                 .padding(.vertical, 8)
             }
+            if let profile = model.profile { ProfileStatisticsView(profile: profile) }
             Section("账户") {
                 PhotosPicker(selection: $avatarItem, matching: .images) {
                     Label("更换头像", systemImage: "photo")
                 }
                 Button { showingEdit = true } label: { Label("编辑资料", systemImage: "person.text.rectangle") }
                 Button { showingPassword = true } label: { Label("修改密码", systemImage: "key") }
-                if model.profile?.qqNickname == nil {
+                NavigationLink { ChangeUsernameView() } label: { Label("修改用户名", systemImage: "pencil") }
+                NavigationLink { GameBindingsView() } label: { Label("游戏账号绑定", systemImage: "person.badge.plus") }
+                if model.profile?.qqBound != true {
                     Button { showingQQBinding = true } label: { Label("绑定 QQ", systemImage: "link") }
                 } else {
                     Button(role: .destructive) { unbindQQ() } label: {
@@ -222,27 +225,27 @@ private struct EditProfileView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var nickname = ""
-    @State private var email = ""
+    @State private var bio = ""
 
     var body: some View {
         NavigationStack {
             Form {
                 TextField("昵称", text: $nickname)
-                TextField("邮箱", text: $email).textInputAutocapitalization(.never).keyboardType(.emailAddress)
+                TextField("简介", text: $bio, axis: .vertical)
             }
             .navigationTitle("编辑资料")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
             }
-            .onAppear { nickname = model.profile?.nickname ?? ""; email = model.profile?.email ?? "" }
+            .onAppear { nickname = model.profile?.nickname ?? ""; bio = model.profile?.bio ?? "" }
         }
     }
 
     private func save() {
         Task {
             do {
-                _ = try await model.api.post(path: "/user/profile", fields: ["nickname": .string(nickname), "email": .string(email)])
+                _ = try await model.api.post(path: "/user/profile", fields: ["nickname": .string(nickname), "bio": .string(bio)])
                 await model.refreshProfile()
                 dismiss()
             } catch { model.errorMessage = error.localizedDescription }
@@ -305,7 +308,7 @@ private struct NotificationsView: View {
         loading = true
         defer { loading = false }
         do {
-            items = try await model.api.values(path: "/notifications")
+            items = try await model.api.values(path: "/notifications", query: [.init(name: "limit", value: "50")])
             try await model.markAllNotificationsRead()
         } catch { model.errorMessage = error.localizedDescription }
     }

@@ -27,7 +27,10 @@ struct DownloadsView: View {
         Group {
             if isLoading && resources.isEmpty { ProgressView() }
             else if resources.isEmpty {
-                EmptyStateView(icon: "shippingbox", title: "没有找到资源", message: "请检查旧模组接口，或下拉重新加载。")
+                ScrollView {
+                    EmptyStateView(icon: "shippingbox", title: "没有找到资源", message: "下拉刷新，或点击重试。")
+                    Button("重新加载") { Task { await load() } }
+                }.refreshable { await load() }
             } else {
                 List(resources) { item in resourceRow(item) }
                     .listStyle(.insetGrouped)

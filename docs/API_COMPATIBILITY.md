@@ -14,12 +14,15 @@
 ## 已映射功能
 
 - 身份：`/login`、`/refresh`、`/register`、`/forgot-password`、`/reset-password`、`/send-verify-code`、`/check-qq-login`、`/notify-login`。登录使用字段 `account`（邮箱或用户名）和 `password`；QQ 登录先请求 `/qq-login`，读取 `data.login_url`，再打开 QQ 授权页。
-- 用户：`/user/profile`、`/user/avatar`、`/user/password`、`/user/change-username`、`/user/bind-qq`、`/user/unbind-qq`、`/user/items`、`/user/emojis`。
+- 用户：`/user/profile`、`/user/avatar`、`/user/password`、`/user/change-username`、`/user/bind-qq`、`/user/unbind-qq`、`/user/items`、`/user/emojis`、`/user/game-bindings`、`/user/game-bindings/delete`、`/player/info/{player}`。
 - 社区：`/forum/categories`、`/forum/posts`、`/forum/post`、帖子详情的 `/reply`、`/like`、`/tip`，以及 `/upload/image`。
-- 游戏：`/seasons`、`/server/players`、`/rank/coins`、`/rank/playtime`、`/playtime/rewards`、`/tasks`、`/polls`、`/vote`。
+- 游戏：`/seasons`、`/server/players`、`/rank/coins`、`/rank/playtime`、`/playtime/rewards`、`/tasks`、`/polls`、`/polls/{id}/vote`。
 - 商城：`/shop/items`、`/shop/buy`、`/titles/catalog`、`/titles/mine`、`/titles/buy`、`/titles/wear`、`/redeem/rate`、`/redeem/game-coins`。
 - 内容：`/announcements`、`/notifications`、`/notifications/unread`、`/notifications/read`、`/suggestions`、`/memorials`。
-- 更新：`/update/latest`、`/update/pack-links`、`/mods/list`、`:5551/mods/mods.json`。
+- 更新：`/update/latest`、`/update/pack-links`、`/update/pack-files`、`/mods/list`、`:5551/mods/mods.json`。
+- 市场：`/market/preview`、`/market/history/{identifier}`。
+- 支付：`/pay/create`、`/pay/status?order_no=`、`/afdian/status`、`/afdian/claim`。
+- YSM：独立服务的 `/upload_v2`、`/confirm_duplicate`、`/history?player=`；默认地址来自 EXE 设置，可在 YSM 页选择官方服务主机。
 
 ## 已核验的响应结构
 
@@ -35,7 +38,24 @@
 - 打赏使用 `POST /forum/post/{id}/tip`；客户端要求输入正整数 `amount`，在服务端成功确认后刷新账户余额。
 - `POST /notifications/read` 为批量已读端点；服务端成功响应后客户端立即清除本地未读徽标，再由后续刷新取得服务器的新计数。
 - 决斗场使用认证的 `/pvp/me`、`/pvp/online`、`/pvp/incoming`、`/pvp/accounts`、`/pvp/match/status` 与 `/pvp/rank?limit=50`。写入端点分别为：`POST /pvp/challenge` `{target}`、`POST /pvp/challenge/respond` `{id, action}`、`POST /pvp/match/join` `{account, time_pref}`、`POST /pvp/match/confirm` `{action:"accept"}` 和空对象 `POST /pvp/match/leave`。匹配状态以 `idle/searching/found/starts/expired/declined` 为准，客户端不会伪造游戏内结算。
-- 决斗场仅在页面前台可见且匹配处于 `searching` 或 `found` 时每 2 秒读取状态；进入后台或离开页面立即停止，重新进入后重新拉取服务端状态。
+- 决斗场在页面前台可见且匹配处于 `searching` 或 `found` 时每 2 秒读取状态，每 10 秒读取邀请；进入后台或离开页面立即停止，重新进入或返回前台会完整刷新。无法识别的状态保留为未知，不当成 idle 开放入队。
+
+## 2026-10-13 EXE 静态契约修正
+
+这些契约来自 SHA-256 `59a7b5dc6e79b578ef40c1130b0a30c982ee901aecfeaa430fe915295fc6291e` 的 EXE 内嵌程序集；静态恢复不等于线上交易或对局已经联调成功。
+
+- HTTP 与业务 envelope 的 `code` 均须成功，失败不得触发余额刷新、关闭表单或清除未读数。认证失效尝试一次共享令牌刷新；确定失效后清除会话，网络暂时失败保留会话。
+- 图片上传使用 multipart `image`，头像为 `avatar`，表情为 `emoji`；按实际内容设置 MIME 和文件扩展名，5 MB 上限，不支持的照片格式转换为 JPEG。
+- 通知批量已读为 `{all:true}`；列表 limit=50。前台每 30 秒刷新未读数，后台停止。
+- 密码重置发码使用 `/forgot-password` `{email}`，提交 `{email,code,new_password}`。资料更新为 `{nickname,bio}`，QQ 状态读取 `qq_bound`。
+- QQ 未绑定响应可为带 `temp_token` 的 HTTP 302，仅该专用流程接受；已登录账号绑定发送 `/user/bind-qq` `{temp_token}`，关联已有账号使用 `/qq/bind` `{temp_token,account,password}`。
+- 投票发送 `/polls/{id}/vote` `{option_id}`，展示选项、票数、本人选票和结束状态；称号购买及免费佩戴发送 `{title}`。
+- 游戏绑定添加 `{game_name,uuid}`，删除 `{id}`；游戏奖励按 milestones 的 `claimable/claimed` 控制按钮，领取 `{hours}`，所有影响余额的成功操作刷新个人资料。
+- 决斗账号字段是 `game_name/online`，邀请使用扁平的 `from_name/from_rating/from_tier/from_wins/from_losses` 和 `to_name`，有效期为 `expires_at`；战绩使用布尔 `win` 和 `reported_at`。竞技场时间为 day/night/random，默认 day。
+- YSM 表单为 `code/player_name/is_public/skin_file`。只有明确 duplicate 响应才进入二次授权确认，`/confirm_duplicate` 为 `{code,player_name,original_model_id}`。独立 YSM 主机的当前可用性仍需部署方确认，客户端不对不同主机自动重发上传。
+- 支付宝创建 `{item_id}`，前台轮询订单状态；爱发电状态及领取为 `{out_trade_no}`，喵币兑换为 `{coins}`。支付由用户在支付宝完成，客户端以服务器支付与兑换码状态为准。
+- 社区分页、定向回复 `reply_to`、表情插入、正文 HTML/Markdown 图片均有业务页面；图片保持原文顺序。市场只读页面每分钟前台刷新并展示历史价格。
+- 下载验证 HTTP 状态及哈希，取消与重试关联原记录，重启核对后台任务，文件校验和复制在独立队列执行。
 
 ## 验证约束
 

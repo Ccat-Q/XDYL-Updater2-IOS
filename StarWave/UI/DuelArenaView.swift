@@ -8,11 +8,13 @@ struct DuelArenaView: View {
     @State private var ranks: [DuelPlayer] = []
     @State private var online: [DuelPlayer] = []
     @State private var invites: [DuelInvite] = []
-    @State private var accounts: [String] = []
+    @State private var accounts: [GameBinding] = []
     @State private var selectedAccount = ""
     @State private var match = DuelMatch.idle
     @State private var isLoading = false
     @State private var pendingAction: PendingAction?
+    @State private var isSubmitting = false
+    @State private var timePreference = "day"
 
     private enum PendingAction: Identifiable {
         case challenge(DuelPlayer), respond(DuelInvite, Bool), join, confirm, leave
@@ -53,14 +55,20 @@ struct DuelArenaView: View {
             matchSection
             incomingSection
             leaderboardSection
+            Section("决斗规则") {
+                Text("双方须在游戏内在线。接受或双方确认后，服务器会倒计时传送进竞技场，潜行可以取消。败者装备与经验保留。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("决斗场")
         .overlay { if isLoading && me == nil { ProgressView("正在读取决斗场…") } }
         .refreshable { await loadAll() }
-        .task { await loadAll() }
-        .task(id: pollingKey) { await pollWhileActive() }
-        .onChange(of: scenePhase) { _ in /* changing the key cancels polling immediately */ }
+        .task(id: scenePhase == .active) {
+            guard scenePhase == .active else { return }
+            await loadAll(); await pollWhileActive()
+        }
+        .disabled(isSubmitting || isLoading)
         .confirmationDialog(pendingAction?.title ?? "确认操作", isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }), titleVisibility: .visible) {
             if let action = pendingAction {
                 Button("确认") { pendingAction = nil; perform(action) }
@@ -68,8 +76,6 @@ struct DuelArenaView: View {
             }
         } message: { Text(pendingAction?.message ?? "") }
     }
-
-    private var pollingKey: String { "\(match.isActive)-\(scenePhase == .active)" }
 
     private func myRankSection(_ player: DuelPlayer) -> some View {
         Section("我的排位") {
@@ -88,6 +94,8 @@ struct DuelArenaView: View {
                 Label("\(player.matches) 场", systemImage: "flag")
                 if let peak = player.peakRating { Text("最高 \(peak)").foregroundStyle(.secondary) }
             }.font(.caption)
+            if let count = player.totalPlayers { Text("共 \(count) 名排位玩家 · 连胜 \(player.streak)").font(.caption).foregroundStyle(.secondary) }
+            if let tier = player.nextTier, let need = player.nextTierNeed { Text("距 \(tier) 还需 \(need) 分").font(.caption).foregroundStyle(.secondary) }
         }
     }
 
@@ -109,8 +117,8 @@ struct DuelArenaView: View {
         Section("近期对局") {
             ForEach(recentMatches) { record in
                 HStack {
-                    Image(systemName: record.won == true ? "checkmark.shield.fill" : "shield.slash.fill")
-                        .foregroundStyle(record.won == true ? .green : .red)
+                    Image(systemName: record.won == nil ? "questionmark.circle" : (record.won == true ? "checkmark.shield.fill" : "shield.slash.fill"))
+                        .foregroundStyle(record.won == nil ? Color.secondary : (record.won == true ? Color.green : Color.red))
                     VStack(alignment: .leading) {
                         Text("对手：\(record.opponent)")
                         if !record.time.isEmpty { Text(record.time).font(.caption).foregroundStyle(.secondary) }
@@ -128,8 +136,9 @@ struct DuelArenaView: View {
     private var matchSection: some View {
         Section("排位匹配") {
             if accounts.isEmpty { Text("未找到已绑定的游戏账号，请先在游戏内完成绑定。").foregroundStyle(.secondary) }
-            else { Picker("游戏账号", selection: $selectedAccount) { ForEach(accounts, id: \.self) { Text($0).tag($0) } } }
-            LabeledContent("时间偏好", value: "白天")
+            else { Picker("游戏账号", selection: $selectedAccount) { ForEach(accounts) { Text("\($0.name) · \($0.online ? "在线" : "离线")").tag($0.name) } }.disabled(match.isActive) }
+            NavigationLink("管理游戏账号绑定") { GameBindingsView() }
+            Picker("竞技场时间", selection: $timePreference) { Text("白天").tag("day"); Text("黑夜").tag("night"); Text("随机").tag("random") }.disabled(match.isActive)
             LabeledContent("状态", value: match.state.title)
             if match.state == .searching { LabeledContent("已等待", value: "\(match.waitingSeconds) 秒") }
             if let opponent = match.opponent {
@@ -137,7 +146,7 @@ struct DuelArenaView: View {
                 if match.state == .found { Text("确认：我 \(match.meConfirmed ? "已确认" : "未确认") · 对方 \(match.opponentConfirmed ? "已确认" : "未确认")").font(.caption).foregroundStyle(.secondary) }
             }
             if match.state == .idle || match.state == .expired || match.state == .declined {
-                Button("开始匹配") { pendingAction = .join }.disabled(selectedAccount.isEmpty)
+                Button("开始匹配") { pendingAction = .join }.disabled(selectedAccount.isEmpty || accounts.first(where: { $0.name == selectedAccount })?.online != true)
             } else if match.state == .found && !match.meConfirmed {
                 Button("确认对局") { pendingAction = .confirm }.buttonStyle(.borderedProminent)
                 Button("拒绝 / 取消", role: .destructive) { pendingAction = .leave }
@@ -145,6 +154,10 @@ struct DuelArenaView: View {
                 Button("取消匹配", role: .destructive) { pendingAction = .leave }
             } else if match.state == .starts {
                 Text("请回到游戏内等待服务器倒计时并传送进竞技场。").foregroundStyle(.green)
+            }
+            if match.state == .found {
+                Text("确认剩余：\(match.expiresIn) 秒").font(.caption).foregroundStyle(.secondary)
+                if match.meConfirmed { Button("取消匹配", role: .destructive) { pendingAction = .leave } }
             }
         }
     }
@@ -170,11 +183,13 @@ struct DuelArenaView: View {
             ForEach(incoming) { invite in
                 VStack(alignment: .leading, spacing: 7) {
                     Text("\(invite.player.name) 向你发起挑战")
-                    if let seconds = invite.expiresIn { Text("剩余 \(seconds) 秒").font(.caption).foregroundStyle(.secondary) }
+                    if let deadline = invite.expiresAt { Text("有效期至 \(deadline.formatted())").font(.caption).foregroundStyle(.secondary) }
+                    else if let seconds = invite.expiresIn { Text("剩余 \(seconds) 秒").font(.caption).foregroundStyle(.secondary) }
                     HStack {
                         Button("接受") { pendingAction = .respond(invite, true) }.buttonStyle(.borderedProminent)
                         Button("拒绝", role: .destructive) { pendingAction = .respond(invite, false) }.buttonStyle(.bordered)
                     }
+                    .disabled(invite.expiresAt.map { $0 <= Date() } ?? false)
                 }
             }
         }
@@ -210,26 +225,36 @@ struct DuelArenaView: View {
     private func loadRanks() async { await load { ranks = DuelPayload.list(try await model.api.value(path: "/pvp/rank", query: [URLQueryItem(name: "limit", value: "50")]), keys: ["rankings", "players"]).enumerated().map { DuelPlayer(json: $0.element, fallbackID: "rank-\($0.offset)") }.sorted { ($0.rank ?? Int.max) < ($1.rank ?? Int.max) } } }
     private func loadOnline() async { await load { online = DuelPayload.list(try await model.api.value(path: "/pvp/online"), keys: ["players", "online"]).enumerated().map { DuelPlayer(json: $0.element, fallbackID: "online-\($0.offset)") } } }
     private func loadInvites() async { await load { invites = DuelPayload.invites(try await model.api.value(path: "/pvp/incoming")) } }
-    private func loadAccounts() async { await load { let result = DuelPayload.accounts(try await model.api.value(path: "/pvp/accounts")); accounts = result; if selectedAccount.isEmpty { selectedAccount = result.first ?? "" } } }
+    private func loadAccounts() async { await load {
+        let result = try await model.api.value(path: "/pvp/accounts").rows("accounts").map { GameBinding(json: $0) }.filter { !$0.name.isEmpty }
+        accounts = result
+        if !result.contains(where: { $0.name == selectedAccount }) { selectedAccount = result.first(where: \.online)?.name ?? result.first?.name ?? "" }
+    } }
     private func refreshMatch() async { await load { match = DuelMatch(json: try await model.api.value(path: "/pvp/match/status")) } }
     private func load(_ work: @escaping () async throws -> Void) async { do { try await work() } catch is CancellationError {} catch { model.errorMessage = error.localizedDescription } }
 
     private func pollWhileActive() async {
-        guard match.isActive, scenePhase == .active else { return }
-        while !Task.isCancelled && match.isActive && scenePhase == .active {
+        var tick = 0
+        while !Task.isCancelled && scenePhase == .active {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await refreshMatch(); await loadInvites()
+            if !isSubmitting {
+                if match.isActive { await refreshMatch() }
+                if tick % 5 == 0 { await loadInvites() }
+            }
+            tick += 1
         }
     }
 
     private func perform(_ action: PendingAction) {
+        guard !isSubmitting else { return }; isSubmitting = true
         Task {
+            defer { isSubmitting = false }
             do {
                 switch action {
                 case let .challenge(player): _ = try await model.api.post(path: "/pvp/challenge", fields: ["target": .string(player.name)])
-                case let .respond(invite, accept): _ = try await model.api.post(path: "/pvp/challenge/respond", fields: ["id": .string(invite.id), "action": .string(accept ? "accept" : "decline")])
-                case .join: _ = try await model.api.post(path: "/pvp/match/join", fields: ["account": .string(selectedAccount), "time_pref": .string("day")])
+                case let .respond(invite, accept): _ = try await model.api.post(path: "/pvp/challenge/respond", fields: ["id": .identifier(invite.id), "action": .string(accept ? "accept" : "decline")])
+                case .join: _ = try await model.api.post(path: "/pvp/match/join", fields: ["account": .string(selectedAccount), "time_pref": .string(timePreference)])
                 case .confirm: _ = try await model.api.post(path: "/pvp/match/confirm", fields: ["action": .string("accept")])
                 case .leave: _ = try await model.api.post(path: "/pvp/match/leave", fields: [:])
                 }

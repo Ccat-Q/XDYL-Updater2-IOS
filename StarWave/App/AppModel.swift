@@ -11,12 +11,17 @@ final class AppModel: ObservableObject {
     @Published var unreadCount = 0
     @Published var errorMessage: String?
     @Published var isBusy = false
+    private var sessionObservation: AnyCancellable?
 
     init() {
         let store = SessionStore()
         sessionStore = store
         api = APIClient(sessionStore: store)
         downloads = .shared
+        sessionObservation = store.$accessToken.dropFirst().sink { [weak self] token in
+            self?.objectWillChange.send()
+            if token == nil { self?.profile = nil; self?.unreadCount = 0 }
+        }
     }
 
     var isAuthenticated: Bool { sessionStore.isAuthenticated }
@@ -49,12 +54,21 @@ final class AppModel: ObservableObject {
 
     func refreshProfile() async {
         do { profile = try await api.profile() }
-        catch { errorMessage = error.localizedDescription }
+        catch is CancellationError {} catch { errorMessage = error.localizedDescription }
     }
 
     func refreshUnreadCount() async {
         do { unreadCount = try await api.unreadNotificationCount() }
         catch { /* Notification pages remain available if the badge endpoint differs. */ }
+    }
+
+    func monitorNotifications() async {
+        await refreshUnreadCount()
+        while !Task.isCancelled && isAuthenticated {
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            guard !Task.isCancelled else { return }
+            await refreshUnreadCount()
+        }
     }
 
     func markAllNotificationsRead() async throws {

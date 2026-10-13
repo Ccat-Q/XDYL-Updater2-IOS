@@ -79,7 +79,7 @@ struct AuthTokens: Equatable {
 
     init?(json: JSONValue) {
         let source = json["data"] ?? json
-        guard let access = source["access_token"]?.stringValue ?? source["token"]?.stringValue else { return nil }
+        guard let access = source["access_token"]?.stringValue ?? source["token"]?.stringValue, !access.isEmpty else { return nil }
         accessToken = access
         refreshToken = source["refresh_token"]?.stringValue
         username = source["username"]?.stringValue ?? source["user"]?["username"]?.stringValue
@@ -94,6 +94,14 @@ struct UserProfile: Equatable {
     var balance: String
     var qqNickname: String?
     var avatarURL: URL?
+    var qqBound: Bool
+    var bio: String
+    var level: Int
+    var experience: Int
+    var nextLevelExperience: Int
+    var points: Int
+    var playtime: Int
+    var title: String
 
     init(json: JSONValue) {
         let source = json["data"] ?? json["profile"] ?? json
@@ -104,6 +112,14 @@ struct UserProfile: Equatable {
         balance = source["balance"]?.stringValue ?? source["coins"]?.stringValue ?? "0"
         qqNickname = source["qq_nickname"]?.stringValue
         avatarURL = AppEnvironment.avatarURL(from: source["avatar"]?.stringValue ?? source["avatar_url"]?.stringValue)
+        qqBound = source["qq_bound"]?.boolValue ?? (qqNickname != nil)
+        bio = source["bio"]?.stringValue ?? ""
+        level = source["level"]?.integer ?? 0
+        experience = source["exp"]?.integer ?? 0
+        nextLevelExperience = source["next_level_exp"]?.integer ?? 0
+        points = source["points"]?.integer ?? 0
+        playtime = source["playtime"]?.integer ?? 0
+        title = source["title"]?.stringValue ?? ""
     }
 
     var isAdministrator: Bool { role == "admin" || role == "super_admin" }

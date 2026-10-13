@@ -8,6 +8,8 @@ final class APIClient: ObservableObject {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let diagnostics = DiagnosticsStore.shared
+    private var refreshTask: Task<Bool, Error>?
+    private var inFlightWrites: Set<String> = []
 
     init(sessionStore: SessionStore, session: URLSession = .shared) {
         self.sessionStore = sessionStore
@@ -51,11 +53,28 @@ final class APIClient: ObservableObject {
     }
 
     func pollQQLogin(sessionID: String) async throws -> AuthTokens? {
-        let value = try await qqStatus(sessionID: sessionID)
-        guard value["status"]?.stringValue == "success" || value["access_token"] != nil || value["data"]?["access_token"] != nil else { return nil }
-        guard let tokens = AuthTokens(json: value) else { throw AppError.decoding("QQ 登录响应中没有令牌") }
+        if case let .authenticated(tokens) = try await qqLoginState(sessionID: sessionID) { return tokens }
+        return nil
+    }
+
+    func qqLoginState(sessionID: String) async throws -> QQLoginState {
+        let state = QQLoginState(json: try await qqStatus(sessionID: sessionID))
+        if case let .authenticated(tokens) = state { sessionStore.save(tokens) }
+        return state
+    }
+
+    func linkQQ(token: String, account: String, password: String) async throws {
+        let value = try await post(path: "/qq/bind", fields: ["temp_token": .string(token), "account": .string(account), "password": .string(password)], requiresAuthentication: false)
+        guard let tokens = AuthTokens(json: value) else { throw AppError.decoding("QQ 绑定响应缺少登录令牌") }
         sessionStore.save(tokens)
-        return tokens
+    }
+
+    func request(_ endpoint: APIRequest) async throws -> JSONValue {
+        if endpoint.method == .get { return try await send(endpoint) }
+        let key = endpoint.baseURL.absoluteString + endpoint.path
+        guard inFlightWrites.insert(key).inserted else { throw AppError.decoding("该操作正在处理，请稍候") }
+        defer { inFlightWrites.remove(key) }
+        return try await send(endpoint)
     }
 
     func profile() async throws -> UserProfile {
@@ -71,11 +90,11 @@ final class APIClient: ObservableObject {
     }
 
     func post(path: String, fields: [String: JSONValue], requiresAuthentication: Bool = true, baseURL: URL = AppEnvironment.apiBaseURL) async throws -> JSONValue {
-        try await send(APIRequest(path: path, method: .post, body: .object(fields), requiresAuthentication: requiresAuthentication, baseURL: baseURL))
+        try await request(APIRequest(path: path, method: .post, body: .object(fields), requiresAuthentication: requiresAuthentication, baseURL: baseURL))
     }
 
     func markNotificationsRead() async throws {
-        _ = try await post(path: "/notifications/read", fields: [:])
+        _ = try await post(path: "/notifications/read", fields: ["all": .bool(true)])
     }
 
     func unreadNotificationCount() async throws -> Int {
@@ -86,34 +105,36 @@ final class APIClient: ObservableObject {
 
     func bindQQ(sessionID: String) async throws -> Bool {
         let status = try await qqStatus(sessionID: sessionID)
-        guard status["status"]?.stringValue == "success" || status["qq_token"] != nil || status["data"]?["qq_token"] != nil else { return false }
-        var fields: [String: JSONValue] = ["session_id": .string(sessionID)]
-        if let token = status["qq_token"] ?? status["data"]?["qq_token"] { fields["qq_token"] = token }
-        _ = try await post(path: "/user/bind-qq", fields: fields)
+        guard let token = status.payload["temp_token"]?.stringValue, !token.isEmpty else { return false }
+        _ = try await post(path: "/user/bind-qq", fields: ["temp_token": .string(token)])
         return true
     }
 
-    func upload(path: String, data: Data, filename: String, fieldName: String = "file") async throws -> JSONValue {
-        guard let token = sessionStore.accessToken else { throw AppError.notAuthenticated }
-        let url = AppEnvironment.apiBaseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+    func upload(path: String, data: Data, filename: String, fieldName: String = "image", fields: [String: String] = [:], baseURL: URL = AppEnvironment.apiBaseURL, requiresAuthentication: Bool = true) async throws -> JSONValue {
+        let key = baseURL.absoluteString + path
+        guard inFlightWrites.insert(key).inserted else { throw AppError.decoding("上传正在处理，请稍候") }
+        defer { inFlightWrites.remove(key) }
+        let url = baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
         guard isAllowed(url) else { throw AppError.transport("上传地址不在允许的服务列表中") }
+        let isImage = fieldName == "image" || fieldName == "avatar" || fieldName == "emoji"
+        let image = isImage ? try ImageUpload.prepare(data: data, filename: filename) : nil
+        let fileData = image?.data ?? data
+        let fileName = (image?.filename ?? filename).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
         let boundary = "StarWave-\(UUID().uuidString)"
         var body = Data()
+        for key in fields.keys.sorted() {
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(fields[key]!)\r\n".utf8))
+        }
         body.append(Data("--\(boundary)\r\n".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(filename)\"\r\n".utf8))
-        body.append(Data("Content-Type: application/octet-stream\r\n\r\n".utf8))
-        body.append(data)
+        body.append(Data("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(fileName)\"\r\n".utf8))
+        body.append(Data("Content-Type: \(image?.mimeType ?? "application/octet-stream")\r\n\r\n".utf8))
+        body.append(fileData)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         var request = URLRequest(url: url, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.httpBody = body
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let started = Date()
-        let (responseData, response) = try await session.data(for: request)
-        diagnostics.record(method: request.httpMethod ?? "POST", url: url, status: (response as? HTTPURLResponse)?.statusCode, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), responseBytes: responseData.count)
-        try validate(response: response, data: responseData)
-        return responseData.isEmpty ? .object([:]) : try decoder.decode(JSONValue.self, from: responseData)
+        return try await execute(request, authenticated: requiresAuthentication, ysmDuplicate: path == "/upload_v2")
     }
 
     func latestRelease() async throws -> GitHubRelease {
@@ -143,39 +164,63 @@ final class APIClient: ObservableObject {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
+        return try await execute(request, authenticated: endpoint.requiresAuthentication, allowRefresh: allowRefresh)
+    }
+
+    private func execute(_ original: URLRequest, authenticated: Bool, allowRefresh: Bool = true, qqBinding: Bool = false, ysmDuplicate: Bool = false) async throws -> JSONValue {
+        var request = original
+        if authenticated {
+            guard let token = sessionStore.accessToken else { throw AppError.notAuthenticated }
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        guard let url = request.url else { throw AppError.invalidResponse }
+        let generation = sessionStore.generation
+        let started = Date()
         do {
-            let started = Date()
-            let (data, response) = try await session.data(for: request)
-            diagnostics.record(method: endpoint.method.rawValue, url: url, status: (response as? HTTPURLResponse)?.statusCode, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), responseBytes: data.count)
-            if (response as? HTTPURLResponse)?.statusCode == 401, allowRefresh, try await refreshToken() {
-                return try await send(endpoint, allowRefresh: false)
+            let activeSession = qqBinding ? URLSession(configuration: .ephemeral, delegate: QQRedirectPolicy(), delegateQueue: nil) : session
+            defer { if qqBinding { activeSession.finishTasksAndInvalidate() } }
+            let (data, response) = try await activeSession.data(for: request)
+            try Task.checkCancellation()
+            if authenticated && generation != sessionStore.generation { throw CancellationError() }
+            guard let http = response as? HTTPURLResponse else { throw AppError.invalidResponse }
+            diagnostics.record(method: request.httpMethod ?? "GET", url: url, status: http.statusCode, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), responseBytes: data.count)
+            let json: JSONValue? = data.isEmpty ? .object([:]) : (try? decoder.decode(JSONValue.self, from: data))
+            let unauthorized = http.statusCode == 401 || json?["code"]?.integer == 401
+            if unauthorized, authenticated {
+                if allowRefresh, let current = sessionStore.accessToken, request.value(forHTTPHeaderField: "Authorization") != "Bearer \(current)" {
+                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate)
+                }
+                if allowRefresh, try await refreshToken() {
+                    return try await execute(original, authenticated: true, allowRefresh: false, ysmDuplicate: ysmDuplicate)
+                }
+                sessionStore.clear()
+                throw AppError.notAuthenticated
             }
-            try validate(response: response, data: data)
-            if data.isEmpty { return .object([:]) }
-            return try decoder.decode(JSONValue.self, from: data)
+            if ysmDuplicate, let json, (http.statusCode == 409 || 200..<300 ~= http.statusCode), json["duplicate"]?.boolValue == true || json.payload["duplicate"]?.boolValue == true { return json }
+            try APIResponse.validate(status: http.statusCode, json: json, allowQQBinding: qqBinding)
+            guard let json else { throw AppError.decoding("服务器响应不是有效 JSON") }
+            return json
+        } catch is CancellationError { throw CancellationError()
         } catch let error as AppError {
+            if authenticated, case let .server(status, _) = error, status == 401 { sessionStore.clear(); throw AppError.notAuthenticated }
             throw error
-        } catch let error as DecodingError {
-            diagnostics.record(method: endpoint.method.rawValue, url: url, detail: "响应解码失败：\(error.localizedDescription)")
-            throw AppError.decoding(error.localizedDescription)
+        } catch let error as URLError where error.code == .cancelled { throw CancellationError()
         } catch {
-            diagnostics.record(method: endpoint.method.rawValue, url: url, detail: error.localizedDescription)
+            diagnostics.record(method: request.httpMethod ?? "GET", url: url, detail: "网络传输失败")
             throw AppError.transport(error.localizedDescription)
         }
     }
 
     private func qqStatus(sessionID: String) async throws -> JSONValue {
         let query = [URLQueryItem(name: "session_id", value: sessionID)]
-        do {
-            return try await send(APIRequest(path: "/check-qq-login", query: query, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL))
-        } catch {
-            return try await send(APIRequest(path: "/check-qq-login", query: query, requiresAuthentication: false))
-        }
+        var components = URLComponents(url: AppEnvironment.webBaseURL.appendingPathComponent("check-qq-login"), resolvingAgainstBaseURL: false)!
+        components.queryItems = query
+        return try await execute(URLRequest(url: components.url!), authenticated: false, qqBinding: true)
     }
 
     private func isAllowed(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        if url.scheme == "https", ["login.lanternwaves.fun", "api.github.com", "github.com"].contains(host) { return true }
+        if url.scheme == "https", ["login.lanternwaves.fun", "api.lanternwaves.fun", "api.github.com", "github.com"].contains(host) { return true }
         if url.scheme == "http", host == "api.lanternwaves.fun", [8080, 5551].contains(url.port ?? 80) { return true }
         return false
     }
@@ -186,7 +231,16 @@ final class APIClient: ObservableObject {
     }
 
     private func refreshToken() async throws -> Bool {
+        if let refreshTask { return try await refreshTask.value }
+        let task = Task { try await self.performRefresh() }
+        refreshTask = task
+        defer { refreshTask = nil }
+        return try await task.value
+    }
+
+    private func performRefresh() async throws -> Bool {
         guard let refresh = sessionStore.refreshToken else { return false }
+        let generation = sessionStore.generation
         let value = try await send(APIRequest(
             path: "/refresh",
             method: .post,
@@ -194,6 +248,7 @@ final class APIClient: ObservableObject {
             requiresAuthentication: false,
             baseURL: AppEnvironment.webBaseURL
         ), allowRefresh: false)
+        guard generation == sessionStore.generation else { throw CancellationError() }
         guard let tokens = AuthTokens(json: value) else { return false }
         sessionStore.save(tokens)
         return true
@@ -201,10 +256,11 @@ final class APIClient: ObservableObject {
 
     private func validate(response: URLResponse, data: Data) throws {
         guard let response = response as? HTTPURLResponse else { throw AppError.invalidResponse }
-        guard 200..<300 ~= response.statusCode else {
-            let json = try? decoder.decode(JSONValue.self, from: data)
-            let message = json?["message"]?.stringValue ?? json?["detail"]?.stringValue ?? json?["error"]?.stringValue ?? ""
-            throw AppError.server(status: response.statusCode, message: message)
-        }
+        try APIResponse.validate(status: response.statusCode, json: try? decoder.decode(JSONValue.self, from: data))
     }
+}
+
+/// QQ uses a JSON-bearing 302 for an unbound identity, not a navigation URL.
+private final class QQRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }

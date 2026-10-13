@@ -8,6 +8,8 @@ struct AuthView: View {
     @State private var qqSessionID: String?
     @State private var isPollingQQ = false
     @State private var accountFlow: AccountFlow?
+    @State private var qqLink: QQLinkContext?
+    @State private var loginTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -71,6 +73,8 @@ struct AuthView: View {
             .navigationBarTitleDisplayMode(.inline)
             .loading(model.isBusy)
             .sheet(item: $accountFlow) { flow in AccountFlowView(flow: flow) }
+            .sheet(item: $qqLink) { context in QQLinkAccountView(context: context) }
+            .onDisappear { loginTask?.cancel(); loginTask = nil }
         }
     }
 
@@ -78,7 +82,7 @@ struct AuthView: View {
         let id = UUID().uuidString
         qqSessionID = id
         isPollingQQ = true
-        Task {
+        loginTask = Task {
             defer { isPollingQQ = false }
             do {
                 openURL(try await model.api.startQQLogin(sessionID: id))
@@ -87,8 +91,15 @@ struct AuthView: View {
                 return
             }
             for _ in 0..<45 {
-                if await model.completeQQLogin(sessionID: id) { return }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                do {
+                    switch try await model.api.qqLoginState(sessionID: id) {
+                    case .authenticated: await model.refreshProfile(); return
+                    case let .needsBinding(token, nickname): qqLink = QQLinkContext(token: token, nickname: nickname); return
+                    case .waiting: break
+                    }
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch is CancellationError { return } catch { model.errorMessage = error.localizedDescription; return }
             }
             model.errorMessage = "QQ 授权已超时，请重试"
         }
@@ -141,7 +152,8 @@ private struct AccountFlowView: View {
         Task {
             defer { busy = false }
             do {
-                _ = try await model.api.post(path: "/send-verify-code", fields: ["email": .string(email), "purpose": .string(flow.purpose)], requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
+                let fields: [String: JSONValue] = flow == .register ? ["email": .string(email), "purpose": .string("register")] : ["email": .string(email)]
+                _ = try await model.api.post(path: flow == .register ? "/send-verify-code" : "/forgot-password", fields: fields, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
                 message = "验证码已发送"
             } catch { model.errorMessage = error.localizedDescription }
         }
@@ -152,11 +164,49 @@ private struct AccountFlowView: View {
         Task {
             defer { busy = false }
             do {
-                var fields: [String: JSONValue] = ["email": .string(email), "password": .string(password), "code": .string(code)]
+                var fields: [String: JSONValue] = ["email": .string(email), flow == .register ? "password" : "new_password": .string(password), "code": .string(code)]
                 if flow == .register { fields["username"] = .string(username) }
                 _ = try await model.api.post(path: flow == .register ? "/register" : "/reset-password", fields: fields, requiresAuthentication: false, baseURL: AppEnvironment.webBaseURL)
                 dismiss()
             } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct QQLinkContext: Identifiable {
+    let token: String
+    let nickname: String
+    var id: String { token }
+}
+
+private struct QQLinkAccountView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let context: QQLinkContext
+    @State private var account = ""
+    @State private var password = ""
+    @State private var busy = false
+    @State private var register = false
+    var body: some View {
+        NavigationStack {
+            Form {
+                Text("\(context.nickname) 尚未绑定社区账号，请关联已有账号；也可以先注册，再回到这里关联。")
+                TextField("用户名或邮箱", text: $account).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("密码", text: $password)
+                Button(busy ? "关联中…" : "关联并登录") { link() }.disabled(account.isEmpty || password.isEmpty || busy)
+                Button("注册社区账号") { register = true }
+            }
+            .navigationTitle("关联 QQ")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+            .sheet(isPresented: $register) { AccountFlowView(flow: .register) }
+        }
+    }
+    private func link() {
+        busy = true
+        Task {
+            defer { busy = false }
+            do { try await model.api.linkQQ(token: context.token, account: account, password: password); await model.refreshProfile(); dismiss() }
+            catch { model.errorMessage = error.localizedDescription }
         }
     }
 }

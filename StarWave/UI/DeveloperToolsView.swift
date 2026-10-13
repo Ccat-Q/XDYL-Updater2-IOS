@@ -60,7 +60,11 @@ private struct DeveloperRequestConsoleView: View {
             initial.method = route.method
             initial.useAuthentication = route.requiresAuthentication
             initial.query = route.defaultQuery
-            initial.jsonBody = "{}"
+            initial.jsonBody = route.defaultBody
+            if route.path == "/upload/image" { initial.uploadField = "image" }
+            else if route.path == "/user/avatar" { initial.uploadField = "avatar" }
+            else if route.path == "/user/emojis" { initial.uploadField = "emoji" }
+            else if route.path == "/upload_v2" { initial.uploadField = "skin_file"; initial.jsonBody = #"{"code":"","player_name":"","is_public":false}"# }
         }
         _draft = State(initialValue: initial)
     }
@@ -92,7 +96,7 @@ private struct DeveloperRequestConsoleView: View {
                 Text("每行一个 key=value。") .font(.caption).foregroundStyle(.secondary)
             }
             if draft.method != .get {
-                Section("JSON 请求体") {
+                Section(uploadURL == nil ? "JSON 请求体" : "表单字段（JSON 对象）") {
                     TextEditor(text: $draft.jsonBody).font(.system(.body, design: .monospaced)).frame(minHeight: 140)
                 }
                 Section("文件上传（可选）") {
@@ -230,7 +234,7 @@ private struct DeveloperRouteCatalogView: View {
                 Button("发送 \(route.method.rawValue)", role: .destructive) { selectedRoute = nil; execute(route) }
                 Button("取消", role: .cancel) { selectedRoute = nil }
             }
-        } message: { Text("一键写请求使用空 JSON 对象。需要业务字段、文件或替换 {id} 时，请使用“编辑”。") }
+        } message: { Text("一键请求使用目录中的请求示例。请核对字段；需要填写业务数据或文件时，先使用“编辑”。") }
         .sheet(item: $result) { session in
             NavigationStack { Form { DeveloperResponseView(session: session) }.navigationTitle("一键请求结果") }
         }
@@ -243,6 +247,7 @@ private struct DeveloperRouteCatalogView: View {
     }
 
     private func send(_ route: DeveloperKnownRoute) {
+        guard !route.path.contains("{") else { model.errorMessage = "请先使用“编辑”填写路径中的参数"; return }
         if route.method.changesServerState { selectedRoute = route }
         else { execute(route) }
     }
@@ -251,7 +256,7 @@ private struct DeveloperRouteCatalogView: View {
         isSending = true
         Task {
             defer { isSending = false }
-            let draft = DeveloperRequestDraft(customBaseURL: route.baseURL, path: route.path, method: route.method, query: route.defaultQuery, jsonBody: "{}", useAuthentication: route.requiresAuthentication)
+            let draft = DeveloperRequestDraft(customBaseURL: route.baseURL, path: route.path, method: route.method, query: route.defaultQuery, jsonBody: route.defaultBody, useAuthentication: route.requiresAuthentication)
             result = await DeveloperRequestExecutor(sessionStore: model.sessionStore).execute(draft: draft, baseURL: route.baseURL)
         }
     }

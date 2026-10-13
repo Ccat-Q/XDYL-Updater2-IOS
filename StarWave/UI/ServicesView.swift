@@ -14,6 +14,19 @@ struct ServicesView: View {
         .navigationDestination(for: FeatureRoute.self) { route in
             if route.title == "任务" { TaskFeatureView() }
             else if route.title == "决斗场" { DuelArenaView() }
+            else if route.title == "投票" { PollsView() }
+            else if route.title == "游戏奖励" { PlaytimeRewardsView() }
+            else if route.title == "称号目录" { TitlesView(mine: false) }
+            else if route.title == "我的称号" { TitlesView(mine: true) }
+            else if route.title == "商城" { StoreView() }
+            else if route.title == "市场行情" { MarketView() }
+            else if route.title == "游戏账号绑定" { GameBindingsView() }
+            else if route.title == "喵币兑换" { CoinExchangeView() }
+            else if route.title == "爱发电兑换" { AfdianExchangeView() }
+            else if route.title == "我的物品" { RedeemCodesView() }
+            else if route.title == "YSM 皮肤" { YSMPublishView() }
+            else if route.title == "整合包下载" { PackDownloadsView() }
+            else if route.title == "意见箱" { SuggestionsView() }
             else { RemoteFeatureView(route: route) }
         }
     }
@@ -24,17 +37,20 @@ private struct TaskFeatureView: View {
     @State private var daily: [RemoteItem] = []
     @State private var achievements: [RemoteItem] = []
     @State private var isLoading = false
+    @State private var other: [RemoteItem] = []
+    @State private var claiming: String?
 
     var body: some View {
         Group {
-            if isLoading && daily.isEmpty && achievements.isEmpty { ProgressView() }
-            else if daily.isEmpty && achievements.isEmpty {
+            if isLoading && daily.isEmpty && achievements.isEmpty && other.isEmpty { ProgressView() }
+            else if daily.isEmpty && achievements.isEmpty && other.isEmpty {
                 ScrollView { EmptyStateView(icon: "checkmark.seal", title: "暂无任务", message: "下拉刷新以重试请求。") }
                     .refreshable { await load() }
             } else {
                 List {
                     if !daily.isEmpty { Section("每日任务") { ForEach(daily) { taskRow($0) } } }
                     if !achievements.isEmpty { Section("成就") { ForEach(achievements) { taskRow($0) } } }
+                    if !other.isEmpty { Section("游玩时长及其他任务") { ForEach(other) { taskRow($0) } } }
                 }
                 .listStyle(.insetGrouped)
                 .refreshable { await load() }
@@ -61,7 +77,7 @@ private struct TaskFeatureView: View {
             } else {
                 Button(completion.isComplete ? "领取奖励" : "尚未完成") { claim(item) }
                     .buttonStyle(.bordered)
-                    .disabled(!completion.isComplete)
+                    .disabled(!completion.isComplete || claiming != nil)
             }
         }
         .padding(.vertical, 4)
@@ -86,11 +102,13 @@ private struct TaskFeatureView: View {
             let source = value["data"] ?? value
             daily = firstList(in: source, keys: ["daily", "daily_tasks", "dailies"])
             achievements = firstList(in: source, keys: ["achievements", "achievement_tasks", "achievement"])
+            other = firstList(in: source, keys: ["playtime", "playtime_tasks", "other", "other_tasks"])
             if daily.isEmpty && achievements.isEmpty {
                 let all = RemoteItem.list(from: source)
                 daily = all.filter { ($0.raw["type"]?.stringValue ?? $0.raw["task_type"]?.stringValue ?? "").lowercased().contains("daily") }
                 achievements = all.filter { ($0.raw["type"]?.stringValue ?? $0.raw["task_type"]?.stringValue ?? "").lowercased().contains("achievement") }
-                if daily.isEmpty && achievements.isEmpty { daily = all }
+                let known = Set((daily + achievements).map(\.id))
+                other = all.filter { !known.contains($0.id) }
             }
         } catch { model.errorMessage = error.localizedDescription }
     }
@@ -104,8 +122,10 @@ private struct TaskFeatureView: View {
     }
 
     private func claim(_ item: RemoteItem) {
+        guard claiming == nil else { return }; claiming = item.id
         Task {
-            do { _ = try await model.api.post(path: "/tasks/\(item.id)/claim", fields: [:]); await load() }
+            defer { claiming = nil }
+            do { _ = try await model.api.post(path: "/tasks/\(item.id)/claim", fields: [:]); await model.refreshProfile(); await load() }
             catch { model.errorMessage = error.localizedDescription }
         }
     }
@@ -202,15 +222,15 @@ private struct RemoteFeatureView: View {
         } else if route.title == "商城" {
             Button("购买") { post("/shop/buy", fields: ["item_id": .string(item.id)]) }.buttonStyle(.borderedProminent)
         } else if route.title == "投票" {
-            Button("投票") { post("/vote", fields: ["poll_id": .string(item.id)]) }.buttonStyle(.bordered)
+            EmptyView() // PollsView owns option selection and the write contract.
         } else if route.title == "游戏奖励" {
             Button("领取") { claimPlaytimeReward(item) }
                 .buttonStyle(.bordered)
                 .disabled(PlaytimeRewardTier.claimFields(for: item.raw) == nil)
         } else if route.title == "称号目录" {
-            Button("购买") { post("/titles/buy", fields: ["title_id": .string(item.id)]) }.buttonStyle(.bordered)
+            EmptyView() // TitlesView owns purchase confirmation.
         } else if route.title == "我的称号" {
-            Button("佩戴") { post("/titles/wear", fields: ["title_id": .string(item.id)]) }.buttonStyle(.bordered)
+            EmptyView()
         }
     }
 
@@ -231,7 +251,7 @@ private struct RemoteFeatureView: View {
 
     private func post(_ path: String, fields: [String: JSONValue]) {
         Task {
-            do { _ = try await model.api.post(path: path, fields: fields); await load() }
+            do { _ = try await model.api.post(path: path, fields: fields); await model.refreshProfile(); await load() }
             catch { model.errorMessage = error.localizedDescription }
         }
     }
@@ -327,7 +347,7 @@ private struct RankRow: View {
     }
 }
 
-private struct CustomTitlePurchaseView: View {
+struct CustomTitlePurchaseView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let onComplete: () async -> Void
@@ -351,6 +371,7 @@ private struct CustomTitlePurchaseView: View {
                     }
                     Text("颜色代码会随称号提交，但不会显示在预览中。")
                         .font(.caption).foregroundStyle(.secondary)
+                    if !title.isEmpty, let error = TitleValidation.error(for: title, maxVisible: rules?.maximumLength) { Text(error).font(.caption).foregroundStyle(.red) }
                 }
 
                 Section("颜色代码") {
@@ -442,7 +463,7 @@ private struct CustomTitlePurchaseView: View {
         return visibleCharacterCount > maximumLength
     }
 
-    private var canSubmit: Bool { !visibleTitle.isEmpty && !isOverLimit }
+    private var canSubmit: Bool { TitleValidation.error(for: title, maxVisible: rules?.maximumLength) == nil }
 
     private var lengthDescription: String {
         if let maximumLength = rules?.maximumLength { return "\(visibleCharacterCount) / \(maximumLength)" }

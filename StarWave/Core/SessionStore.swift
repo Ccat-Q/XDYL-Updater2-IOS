@@ -7,6 +7,7 @@ final class SessionStore: ObservableObject {
     @Published private(set) var accessToken: String?
     @Published private(set) var refreshToken: String?
     @Published private(set) var username: String?
+    private(set) var generation = UUID()
 
     private let keychain = KeychainStore(service: "com.ccatq.xdylupdater2.session")
 
@@ -19,15 +20,17 @@ final class SessionStore: ObservableObject {
     var isAuthenticated: Bool { !(accessToken ?? "").isEmpty }
 
     func save(_ tokens: AuthTokens) {
+        if accessToken == nil { generation = UUID() }
         accessToken = tokens.accessToken
         refreshToken = tokens.refreshToken
-        username = tokens.username
+        username = tokens.username ?? username
         keychain.write(tokens.accessToken, key: "accessToken")
         keychain.write(tokens.refreshToken, key: "refreshToken")
-        keychain.write(tokens.username, key: "username")
+        keychain.write(username, key: "username")
     }
 
     func clear() {
+        generation = UUID()
         accessToken = nil
         refreshToken = nil
         username = nil

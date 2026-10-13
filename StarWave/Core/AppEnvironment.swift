@@ -8,6 +8,11 @@ enum AppEnvironment {
     static let webBaseURL = URL(string: "https://login.lanternwaves.fun")!
     static let releasesURL = URL(string: "https://api.github.com/repos/Ccat-Q/XDYL-Updater2-IOS/releases/latest")!
     static let repositoryReleasesURL = URL(string: "https://github.com/Ccat-Q/XDYL-Updater2-IOS/releases")!
+    static var ysmBaseURL: URL {
+        let raw = UserDefaults.standard.string(forKey: "ysm_api_base") ?? "http://api.lanternwaves.fun:8080"
+        guard let url = URL(string: raw), ["login.lanternwaves.fun", "api.lanternwaves.fun"].contains(url.host?.lowercased() ?? ""), url.scheme == "https" || (url.scheme == "http" && url.host == "api.lanternwaves.fun" && url.port == 8080) else { return apiBaseURL }
+        return url
+    }
 
     static func avatarURL(from value: String?) -> URL? {
         guard let value, !value.isEmpty else { return nil }
@@ -34,12 +39,17 @@ enum AppEnvironment {
         .init(title: "我的物品", icon: "shippingbox", path: "/user/items"),
         .init(title: "YSM 皮肤", icon: "person.crop.square", path: "/user/items"),
         .init(title: "在线玩家", icon: "person.3", path: "/server/players"),
-        .init(title: "喵币排行", icon: "trophy", path: "/rank/coins"),
+        .init(title: "累计喵币排行", icon: "trophy", path: "/rank/coins"),
         .init(title: "在线排行", icon: "clock", path: "/rank/playtime"),
         .init(title: "游戏奖励", icon: "giftcard", path: "/playtime/rewards"),
         .init(title: "称号目录", icon: "tag", path: "/titles/catalog"),
         .init(title: "我的称号", icon: "person.text.rectangle", path: "/titles/mine"),
-        .init(title: "纪念堂", icon: "building.columns", path: "/memorials")
+        .init(title: "纪念堂", icon: "building.columns", path: "/memorials"),
+        .init(title: "市场行情", icon: "chart.xyaxis.line", path: "/market/preview"),
+        .init(title: "游戏账号绑定", icon: "person.badge.plus", path: "/user/game-bindings"),
+        .init(title: "喵币兑换", icon: "arrow.left.arrow.right", path: "/redeem/rate"),
+        .init(title: "爱发电兑换", icon: "heart", path: "/afdian/status"),
+        .init(title: "整合包下载", icon: "archivebox", path: "/update/pack-files")
     ]
 }
 
