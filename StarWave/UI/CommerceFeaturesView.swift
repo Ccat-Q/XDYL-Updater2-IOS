@@ -113,10 +113,10 @@ struct RedeemCodesView: View {
     @State private var codes: [RedeemCode] = []
     var body: some View {
         List {
-            ForEach(codes) { code in
+            ForEach(codes) { (code: RedeemCode) in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(code.name).font(.headline)
-                    Text(code.used ? "已使用" : "未使用").font(.caption).foregroundStyle(code.used ? .secondary : .green)
+                    Text(code.used ? "已使用" : "未使用").font(.caption).foregroundStyle(code.used ? Color.secondary : Color.green)
                     Text(code.code).font(.body.monospaced()).textSelection(.enabled)
                     if !code.created.isEmpty { Text(code.created).font(.caption).foregroundStyle(.secondary) }
                     Button("复制兑换码") { UIPasteboard.general.string = code.code }.disabled(code.code.isEmpty)
