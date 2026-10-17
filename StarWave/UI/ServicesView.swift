@@ -27,6 +27,7 @@ struct ServicesView: View {
             else if route.title == "YSM 皮肤" { YSMPublishView() }
             else if route.title == "整合包下载" { PackDownloadsView() }
             else if route.title == "意见箱" { SuggestionsView() }
+            else if route.path == "/seasons" { SeasonsView() }
             else { RemoteFeatureView(route: route) }
         }
     }
@@ -359,6 +360,7 @@ struct CustomTitlePurchaseView: View {
     @State private var isLoadingRules = false
     @State private var showingConfirmation = false
     @State private var isSubmitting = false
+    @State private var deliveryMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -371,7 +373,7 @@ struct CustomTitlePurchaseView: View {
                         Spacer()
                         Text(lengthDescription).foregroundStyle(isOverLimit ? .red : .secondary)
                     }
-                    Text("颜色代码会随称号提交，但不会显示在预览中。")
+                    Text("颜色/格式代码随称号提交，不计可见字数。支持 &l 粗体、&r 重置；&k、&m、&n、&o 按 Windows 兼容规则隐藏，不绘制对应效果。")
                         .font(.caption).foregroundStyle(.secondary)
                     if !title.isEmpty, let error = TitleValidation.error(for: title, maxVisible: rules?.maximumLength) { Text(error).font(.caption).foregroundStyle(.red) }
                 }
@@ -383,10 +385,10 @@ struct CustomTitlePurchaseView: View {
                     } label: {
                         Label("插入颜色代码", systemImage: "paintpalette")
                     }
-                    Button("清除全部颜色代码", role: .destructive) {
+                    Button("清除全部颜色/格式代码", role: .destructive) {
                         title = TitleColor.removingTokens(from: title)
                     }
-                    .disabled(!title.contains("&#"))
+                    .disabled(TitleMarkup.plainText(title) == title)
                     LabeledContent("当前代码", value: colorToken)
                         .font(.caption.monospaced())
                 }
@@ -399,7 +401,7 @@ struct CustomTitlePurchaseView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             StyledTitleText(title)
-                                .font(.title3.bold())
+                                .font(.title3)
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                                 .accessibilityLabel("称号预览：\(visibleTitle)")
                         }
@@ -442,6 +444,9 @@ struct CustomTitlePurchaseView: View {
             } message: { Text(confirmationMessage) }
         }
         .task { await loadRules() }
+        .alert("称号购买结果", isPresented: Binding(get: { deliveryMessage != nil }, set: { if !$0 { deliveryMessage = nil } })) {
+            Button("完成") { deliveryMessage = nil; dismiss() }
+        } message: { Text(deliveryMessage ?? "") }
     }
 
     private var colorToken: String {
@@ -503,9 +508,9 @@ struct CustomTitlePurchaseView: View {
         Task {
             defer { isSubmitting = false }
             do {
-                _ = try await model.api.post(path: "/titles/buy", fields: ["title": .string(value)])
+                let response = try await model.api.post(path: "/titles/buy", fields: ["title": .string(value)])
+                deliveryMessage = TitleDeliveryResult(json: response, operation: .purchase).message
                 await onComplete()
-                dismiss()
             } catch { model.errorMessage = error.localizedDescription }
         }
     }

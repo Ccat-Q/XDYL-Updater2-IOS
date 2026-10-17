@@ -19,9 +19,9 @@ final class APIClient: ObservableObject {
     private var notifiedGeneration: UUID?
     private var inFlightWrites: Set<String> = []
 
-    init(sessionStore: SessionStore, session: URLSession = .shared, qqSession: URLSession? = nil) {
+    init(sessionStore: SessionStore, session: URLSession? = nil, qqSession: URLSession? = nil) {
         self.sessionStore = sessionStore
-        self.session = session
+        self.session = session ?? URLSession(configuration: .default, delegate: BusinessRedirectPolicy(), delegateQueue: nil)
         self.qqSession = qqSession ?? URLSession(configuration: .ephemeral, delegate: QQRedirectPolicy(), delegateQueue: nil)
         decoder.dateDecodingStrategy = .iso8601
     }
@@ -196,6 +196,7 @@ final class APIClient: ObservableObject {
     }
 
     func uploadFile(path: String, fileURL: URL, fields: [String: String], fieldName: String = "skin_file", baseURL: URL, requiresAuthentication: Bool = false) async throws -> JSONValue {
+        let generation = sessionStore.generation
         let key = baseURL.absoluteString + path
         guard inFlightWrites.insert(key).inserted else { throw AppError.decoding("上传正在处理，请稍候") }
         defer { inFlightWrites.remove(key) }
@@ -205,6 +206,7 @@ final class APIClient: ObservableObject {
         let bodyURL = try await MultipartFileUpload.prepare(fileURL: fileURL, filename: fileURL.lastPathComponent, fieldName: fieldName, fields: fields, boundary: boundary)
         defer { try? FileManager.default.removeItem(at: bodyURL) }
         try Task.checkCancellation()
+        guard generation == sessionStore.generation else { throw CancellationError() }
         var request = URLRequest(url: url, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -301,15 +303,23 @@ final class APIClient: ObservableObject {
     }
 
     private func isAllowed(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        if url.scheme == "https", ["login.lanternwaves.fun", "api.lanternwaves.fun", "api.github.com", "github.com"].contains(host) { return true }
-        if url.scheme == "http", host == "api.lanternwaves.fun", [8080, 5551].contains(url.port ?? 80) { return true }
-        return false
+        BusinessRedirectPolicy.isAllowed(url)
     }
 
     private var userAgent: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         return "StarWave-iOS/\(version)"
+    }
+
+    /// Capture identity before Photos/iCloud suspends, not when HTTP begins.
+    func uploadSelectedImage(path: String, filename: String, fieldName: String = "image", load: () async throws -> Data?) async throws -> JSONValue {
+        let generation = sessionStore.generation
+        guard sessionStore.isAuthenticated else { throw AppError.notAuthenticated }
+        let data = try await load()
+        try Task.checkCancellation()
+        guard generation == sessionStore.generation else { throw CancellationError() }
+        guard let data else { throw AppError.invalidDownload }
+        return try await upload(path: path, data: data, filename: filename, fieldName: fieldName)
     }
 
     private func refreshToken() async throws -> Bool {

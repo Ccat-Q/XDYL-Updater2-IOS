@@ -145,13 +145,24 @@ final class DeveloperToolsStore: ObservableObject {
     private let maxSnapshots = 300
     private let storageDirectory: URL
     private let defaults: UserDefaults
+    private let exportDirectory: URL
+    private let legacyExportURLs: [URL]
+    private let deleteFile: (URL) throws -> Void
     private var protectedHistoryURLs: Set<URL> = []
     @Published private(set) var persistenceWarning: String?
 
-    init(directoryURL: URL? = nil, userDefaults: UserDefaults = .standard) {
+    init(directoryURL: URL? = nil, userDefaults: UserDefaults = .standard, exportDirectoryURL: URL? = nil,
+         deleteFile: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) {
         storageDirectory = directoryURL ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("DeveloperDiagnostics", isDirectory: true)
         defaults = userDefaults
+        self.deleteFile = deleteFile
+        exportDirectory = exportDirectoryURL ?? (directoryURL ?? FileManager.default.temporaryDirectory)
+            .appendingPathComponent("DeveloperDiagnosticsExports", isDirectory: true)
+        // Remove only the two exact filenames written by older app versions.
+        legacyExportURLs = directoryURL == nil ? ["developer-sessions-raw.json", "developer-sessions-redacted.json"].map {
+            FileManager.default.temporaryDirectory.appendingPathComponent($0)
+        } : []
         sessions = loadRecords(DeveloperSession.self, from: sessionsURL)
         performance = loadRecords(PerformanceSnapshot.self, from: performanceURL)
         environments = defaults.data(forKey: environmentsKey).flatMap { try? JSONDecoder().decode([DeveloperEnvironment].self, from: $0) } ?? []
@@ -194,8 +205,11 @@ final class DeveloperToolsStore: ObservableObject {
         persistEnvironments()
     }
 
-    func clearSessions() { sessions.removeAll(); remove(sessionsURL) }
-    func clearPerformance() { performance.removeAll(); remove(performanceURL) }
+    @discardableResult func clearSessions() -> Bool {
+        sessions.removeAll()
+        return clearHistory(at: sessionsURL, exports: true)
+    }
+    @discardableResult func clearPerformance() -> Bool { performance.removeAll(); return clearHistory(at: performanceURL, exports: false) }
     func clearEnvironments() { environments.removeAll(); defaults.removeObject(forKey: environmentsKey) }
 
     func diskUsage() -> Int64 {
@@ -205,7 +219,7 @@ final class DeveloperToolsStore: ObservableObject {
 
     func exportURL(redacted: Bool) -> URL? {
         let name = redacted ? "developer-sessions-redacted.json" : "developer-sessions-raw.json"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let url = exportDirectory.appendingPathComponent(name)
         let payload: [DeveloperSession]
         if redacted {
             payload = sessions.map { session in
@@ -223,17 +237,20 @@ final class DeveloperToolsStore: ObservableObject {
         } else { payload = sessions }
         guard let data = try? JSONEncoder.pretty.encode(payload) else { return nil }
         do {
+            try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
             try data.write(to: url, options: [.atomic, .completeFileProtection])
             return url
         } catch { persistenceWarning = "导出失败：\(error.localizedDescription)"; return nil }
     }
 
-    func resetAll() {
-        clearSessions(); clearPerformance(); clearEnvironments()
+    @discardableResult func resetAll() -> Bool {
+        let sessionsCleared = clearSessions(), performanceCleared = clearPerformance()
+        clearEnvironments()
         DiagnosticsStore.shared.clear()
         URLCache.shared.removeAllCachedResponses()
         let downloads = DownloadManager.shared.records
         downloads.forEach { DownloadManager.shared.delete($0) }
+        return sessionsCleared && performanceCleared
     }
 
     static func redact(_ value: String) -> String {
@@ -245,7 +262,7 @@ final class DeveloperToolsStore: ObservableObject {
 
     static func isSensitiveKey(_ name: String) -> Bool {
         let key = name.lowercased().filter { $0.isLetter || $0.isNumber }
-        return ["authorization", "proxyauthorization", "cookie", "setcookie", "session", "sessionid", "jwt", "apikey", "credential", "credentials", "secret", "clientsecret", "code", "redeemcode", "verificationcode"].contains(key)
+        return ["authorization", "proxyauthorization", "cookie", "setcookie", "session", "sessionid", "jwt", "apikey", "credential", "credentials", "secret", "clientsecret", "code", "codetext", "redeemcode", "verificationcode"].contains(key)
             || ["token", "tokens", "password", "secret", "apikey", "sessionid", "authorization", "cookie", "privatekey"].contains { key.hasSuffix($0) }
     }
 
@@ -284,7 +301,7 @@ final class DeveloperToolsStore: ObservableObject {
             #"(?im)((?:proxy-)?authorization\s*[:=]\s*)[^\r\n]+"#,
             #"(?im)((?:set-)?cookie\s*[:=]\s*)[^\r\n]+"#,
             #"(?i)(\bBearer\s+)[A-Za-z0-9._~+/-]+=*"#,
-            #"(?i)((?:[\"']?(?:[\w-]*token|[\w-]*password|[\w-]*secret|api[_-]?key|session(?:[_-]?id)?|authorization|cookie|code|redeem[_-]?code)[\"']?)\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]]+)"#
+            #"(?i)((?:[\"']?(?:[\w-]*token|[\w-]*password|[\w-]*secret|api[_-]?key|session(?:[_-]?id)?|authorization|cookie|code(?:[_-]?text)?|redeem[_-]?code)[\"']?)\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]]+)"#
         ]
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -345,11 +362,28 @@ final class DeveloperToolsStore: ObservableObject {
         return decoder
     }
 
-    private func remove(_ url: URL) {
+    private func clearHistory(at original: URL, exports: Bool) -> Bool {
+        var targets = [original]
+        var failures: [String] = []
         do {
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-            protectedHistoryURLs.remove(url)
-        } catch { persistenceWarning = "清除记录失败：\(error.localizedDescription)" }
+            if FileManager.default.fileExists(atPath: directoryURL.path) {
+                targets += try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
+                    .filter { $0.lastPathComponent.hasPrefix(original.lastPathComponent + ".recovery-") }
+            }
+        } catch { failures.append("无法列出恢复副本：\(error.localizedDescription)") }
+        if exports {
+            targets += ["developer-sessions-raw.json", "developer-sessions-redacted.json"].map { exportDirectory.appendingPathComponent($0) }
+            targets += legacyExportURLs
+        }
+        for url in Set(targets) {
+            do {
+                if FileManager.default.fileExists(atPath: url.path) { try deleteFile(url) }
+                protectedHistoryURLs.remove(url)
+            } catch { failures.append("\(url.lastPathComponent)：\(error.localizedDescription)") }
+        }
+        if !failures.isEmpty { persistenceWarning = "部分诊断文件未能清除：" + failures.joined(separator: "；") }
+        else if exports { persistenceWarning = nil }
+        return failures.isEmpty
     }
 }
 

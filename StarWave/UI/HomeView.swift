@@ -3,7 +3,11 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @State private var announcements: [RemoteItem] = []
-    @State private var serverStatus: [RemoteItem] = []
+    @State private var serverStatus: ServerSnapshot?
+    @State private var serverError: String?
+    @State private var packVersion = ""
+    @State private var packChangelog = ""
+    @State private var loadID = UUID()
     @State private var release: GitHubRelease?
     @State private var isLoading = false
     @AppStorage("updateChecksEnabled") private var updateChecksEnabled = true
@@ -13,11 +17,20 @@ struct HomeView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 welcomeCard
                 SectionCard(title: "服务器状态", icon: "dot.radiowaves.left.and.right") {
-                    if serverStatus.isEmpty { Text("暂无状态数据").foregroundStyle(.secondary) }
-                    ForEach(serverStatus) { item in
-                            NavigationLink { PlayerInfoView(player: item.raw["name"]?.stringValue ?? item.title) } label: { RemoteItemRow(item: item) }
-                    }
+                    if let serverError {
+                        Label("暂时无法连接服务器状态服务", systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                        Text(serverError).font(.caption).foregroundStyle(.secondary)
+                        Button("重新加载") { Task { await load() } }
+                    } else if let serverStatus {
+                        LabeledContent(serverStatus.name, value: "在线 \(serverStatus.count) 人")
+                        if serverStatus.count == 0 { Text("当前无人在线").foregroundStyle(.secondary) }
+                        else if serverStatus.players.isEmpty { Text("服务器未提供玩家名单").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(serverStatus.players) { player in
+                            NavigationLink(player.name) { PlayerInfoView(player: player.name) }
+                        }
+                    } else { Text("正在读取状态…").foregroundStyle(.secondary) }
                 }
+                PackVersionNoticeView(version: packVersion, changelog: packChangelog, showDownloadLink: true)
                 SectionCard(title: "公告", icon: "megaphone") {
                     if announcements.isEmpty { Text("暂无公告").foregroundStyle(.secondary) }
                     ForEach(announcements) { item in
@@ -59,14 +72,28 @@ struct HomeView: View {
 
     private func load() async {
         isLoading = true
-        defer { isLoading = false }
+        let id = UUID(); loadID = id
+        defer { if id == loadID { isLoading = false } }
         async let announcementsRequest = model.api.values(path: "/announcements")
-        async let statusRequest = model.api.values(path: "/server/players")
-        announcements = (try? await announcementsRequest) ?? []
-        serverStatus = (try? await statusRequest) ?? []
+        async let packRequest = model.api.value(path: "/update/pack-links")
+        do {
+            let value = try await model.api.value(path: "/server/players")
+            guard loadID == id, !Task.isCancelled else { return }
+            serverStatus = ServerSnapshot(json: value); serverError = nil
+        } catch is CancellationError { return } catch {
+            guard loadID == id, !Task.isCancelled else { return }
+            serverStatus = nil; serverError = error.localizedDescription
+        }
+        let news = try? await announcementsRequest
+        let pack = try? await packRequest
+        guard loadID == id, !Task.isCancelled else { return }
+        announcements = news ?? []
+        packVersion = pack?.payload["pack_version"]?.stringValue ?? ""
+        packChangelog = pack?.payload["pack_changelog"]?.stringValue ?? ""
         if updateChecksEnabled, let latest = try? await model.api.latestRelease(),
+           loadID == id, !Task.isCancelled,
            latest.isNewer(than: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0") { release = latest }
-        else { release = nil }
+        else if loadID == id { release = nil }
         await model.refreshUnreadCount()
     }
 }
@@ -149,7 +176,7 @@ struct StyledTitleText: View {
     var body: some View {
         TitleColor.segments(in: value, fallback: TitleColor.color(from: colorHint))
             .reduce(Text("")) { partial, segment in
-                partial + Text(segment.text).foregroundColor(segment.color)
+                partial + Text(segment.text).foregroundColor(segment.color).bold(segment.bold)
             }
     }
 }
@@ -158,44 +185,19 @@ enum TitleColor {
     struct Segment {
         let text: String
         let color: Color
+        let bold: Bool
     }
 
     static func segments(in value: String, fallback: Color?) -> [Segment] {
-        let defaultColor = fallback ?? .primary
-        guard let expression = try? NSRegularExpression(pattern: #"&#([0-9A-Fa-f]{6})|&([0-9A-Fa-frR])"#) else {
-            return [Segment(text: value, color: defaultColor)]
-        }
-        let matches = expression.matches(in: value, range: NSRange(value.startIndex..., in: value))
-        guard !matches.isEmpty else { return [Segment(text: value, color: defaultColor)] }
-
-        var result: [Segment] = []
-        var cursor = value.startIndex
-        var activeColor = defaultColor
-        for match in matches {
-            guard let tokenRange = Range(match.range, in: value) else { continue }
-            let text = String(value[cursor..<tokenRange.lowerBound])
-            if !text.isEmpty { result.append(Segment(text: text, color: activeColor)) }
-            if let hexRange = Range(match.range(at: 1), in: value) { activeColor = color(from: String(value[hexRange])) ?? activeColor }
-            else if let shortRange = Range(match.range(at: 2), in: value) {
-                let code = String(value[shortRange]).lowercased()
-                let palette = ["0":"000000", "1":"0000AA", "2":"00AA00", "3":"00AAAA", "4":"AA0000", "5":"AA00AA", "6":"FFAA00", "7":"AAAAAA", "8":"555555", "9":"5555FF", "a":"55FF55", "b":"55FFFF", "c":"FF5555", "d":"FF55FF", "e":"FFFF55", "f":"FFFFFF"]
-                activeColor = code == "r" ? defaultColor : (color(from: palette[code]) ?? activeColor)
-            }
-            cursor = tokenRange.upperBound
-        }
-        let trailing = String(value[cursor...])
-        if !trailing.isEmpty { result.append(Segment(text: trailing, color: activeColor)) }
-        return result.isEmpty ? [Segment(text: value, color: defaultColor)] : result
+        TitleMarkup.segments(in: value).map { Segment(text: $0.text, color: color(from: $0.hex) ?? fallback ?? .primary, bold: $0.bold) }
     }
 
     static func removingTokens(from value: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: #"&#[0-9A-Fa-f]{6}|&[0-9A-Fa-frR]"#) else { return value }
-        let range = NSRange(value.startIndex..., in: value)
-        return expression.stringByReplacingMatches(in: value, range: range, withTemplate: "")
+        TitleMarkup.plainText(value)
     }
 
     static func visibleCharacterCount(in value: String) -> Int {
-        removingTokens(from: value).utf16.count
+        TitleMarkup.visibleLength(value)
     }
 
     static func color(from value: String?) -> Color? {

@@ -104,7 +104,8 @@ private struct ComposePostView: View {
     @State private var selectedCategoryID = ""
     @State private var isSending = false
     @State private var attachment: PhotosPickerItem?
-    @State private var isUploadingImage = false
+    @StateObject private var imageUpload = AccountImageUpload()
+    private var isUploadingImage: Bool { imageUpload.isUploading }
     @State private var showingEmojis = false
 
     var body: some View {
@@ -131,6 +132,8 @@ private struct ComposePostView: View {
             }
         }
         .onChange(of: attachment) { item in uploadImage(item) }
+        .onChange(of: model.sessionStore.generation) { imageUpload.sessionChanged(to: $0); attachment = nil }
+        .onDisappear { imageUpload.cancel(); attachment = nil }
         .sheet(isPresented: $showingEmojis) { EmojiPickerView { url in content += "\n![表情](\(url.absoluteString))\n" } }
     }
 
@@ -150,15 +153,12 @@ private struct ComposePostView: View {
 
     private func uploadImage(_ item: PhotosPickerItem?) {
         guard let item else { return }
-        isUploadingImage = true
-        Task {
-            defer { isUploadingImage = false; attachment = nil }
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
-                let response = try await model.api.upload(path: "/upload/image", data: data, filename: "post-image.jpg")
-                guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
-                content += "\n![图片](\(url.absoluteString))\n"
-            } catch { model.errorMessage = error.localizedDescription }
+        imageUpload.start(model: model, path: "/upload/image", filename: "post-image.jpg", load: {
+            try await item.loadTransferable(type: Data.self)
+        }) { response in
+            guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
+            content += "\n![图片](\(url.absoluteString))\n"
+            attachment = nil
         }
     }
 }
@@ -170,7 +170,8 @@ private struct ForumPostView: View {
     @State private var reply = ""
     @State private var isLoading = false
     @State private var replyAttachment: PhotosPickerItem?
-    @State private var isUploadingReplyImage = false
+    @StateObject private var replyImageUpload = AccountImageUpload()
+    private var isUploadingReplyImage: Bool { replyImageUpload.isUploading }
     @State private var actionMessage: String?
     @State private var showingTip = false
     @State private var tipAmount = ""
@@ -230,6 +231,8 @@ private struct ForumPostView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .onChange(of: replyAttachment) { item in uploadReplyImage(item) }
+        .onChange(of: model.sessionStore.generation) { replyImageUpload.sessionChanged(to: $0); replyAttachment = nil }
+        .onDisappear { replyImageUpload.cancel(); replyAttachment = nil }
         .sheet(isPresented: $showingTip) { tipSheet }
         .sheet(isPresented: $showingEmojis) { EmojiPickerView { url in reply += "\n![表情](\(url.absoluteString))\n" } }
         .loading(isLoading)
@@ -322,15 +325,12 @@ private struct ForumPostView: View {
 
     private func uploadReplyImage(_ item: PhotosPickerItem?) {
         guard let item else { return }
-        isUploadingReplyImage = true
-        Task {
-            defer { isUploadingReplyImage = false; replyAttachment = nil }
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
-                let response = try await model.api.upload(path: "/upload/image", data: data, filename: "reply-image.jpg")
-                guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
-                reply += "\n![图片](\(url.absoluteString))\n"
-            } catch { model.errorMessage = error.localizedDescription }
+        replyImageUpload.start(model: model, path: "/upload/image", filename: "reply-image.jpg", load: {
+            try await item.loadTransferable(type: Data.self)
+        }) { response in
+            guard let url = uploadedImageURL(from: response) else { throw AppError.decoding("上传响应中没有图片地址") }
+            reply += "\n![图片](\(url.absoluteString))\n"
+            replyAttachment = nil
         }
     }
 }

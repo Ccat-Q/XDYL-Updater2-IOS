@@ -8,6 +8,7 @@ struct DuelPlayer: Identifiable, Equatable {
     let name: String
     /// Display names are not necessarily Minecraft account identifiers.
     let gameName: String
+    let username: String?
     let rating: Int
     let tier: String
     let tierIndex: Int
@@ -27,6 +28,7 @@ struct DuelPlayer: Identifiable, Equatable {
         name = json["name"]?.stringValue ?? json["nickname"]?.stringValue ?? json["username"]?.stringValue ?? json["player"]?.stringValue ?? "未知玩家"
         let account = json["game_name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         gameName = account.isEmpty ? name : account
+        username = json.firstNonemptyString("username")
         rating = Self.integer(json, "rating")
         tier = json["tier"]?.stringValue ?? "未定级"
         tierIndex = Self.integer(json, "tier_index")
@@ -68,7 +70,7 @@ struct DuelInvite: Identifiable, Equatable {
         id = json["invite_id"]?.stringValue ?? json["id"]?.stringValue ?? "invite-\(index)"
         let prefix = isIncoming ? "from" : "to"
         var fields = json.objectValue
-        for key in ["name", "game_name", "rating", "tier", "wins", "losses", "matches", "avatar"] {
+        for key in ["name", "game_name", "username", "rating", "tier", "wins", "losses", "matches", "avatar", "streak"] {
             if let value = json["\(prefix)_\(key)"] { fields[key] = value }
         }
         player = DuelPlayer(json: json["player"] ?? json["from"] ?? json["opponent"] ?? .object(fields), fallbackID: id)

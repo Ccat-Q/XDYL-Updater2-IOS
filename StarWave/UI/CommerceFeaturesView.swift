@@ -8,10 +8,12 @@ struct MarketView: View {
     @State private var items: [MarketItem] = []
     @State private var search = ""
     @State private var updated: Date?
+    @State private var sort = MarketSort.magnitude
     var body: some View {
         List {
+            Picker("排序", selection: $sort) { ForEach(MarketSort.allCases) { Text($0.rawValue).tag($0) } }
             if let updated { Text("更新于 \(updated.formatted(date: .omitted, time: .standard)) · 每分钟刷新").font(.caption).foregroundStyle(.secondary) }
-            ForEach(items.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.englishName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }) { item in
+            ForEach(sort.sorted(items.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.englishName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) })) { item in
                 NavigationLink { MarketHistoryView(item: item) } label: {
                     HStack {
                         if let data = item.iconData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(width: 40, height: 40) }
@@ -72,6 +74,7 @@ struct TitlesView: View {
     @State private var selected: RemoteItem?
     @State private var custom = false
     @State private var busy = false
+    @State private var deliveryMessage: String?
     var body: some View {
         List {
             Section {
@@ -82,6 +85,11 @@ struct TitlesView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     StyledTitleText(title(for: item)).font(.headline)
                     if !mine, let price = item.raw["price"]?.stringValue { Text("价格：\(price) 喵币").font(.caption) }
+                    if mine {
+                        if let count = item.raw["count"]?.integer { Text("拥有次数：\(count)").font(.caption).foregroundStyle(.secondary) }
+                        if let first = DisplayFormat.timestamp(item.raw["first_at"] ?? item.raw["created_at"]) { Text("最早获得：\(first)").font(.caption).foregroundStyle(.secondary) }
+                        if item.raw["wearing"]?.boolValue == true { Label("佩戴中", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
+                    }
                     Button(mine ? "免费佩戴" : "购买") { selected = item }.buttonStyle(.bordered).disabled(busy)
                 }
             }
@@ -90,6 +98,9 @@ struct TitlesView: View {
         .navigationTitle(mine ? "我的称号" : "称号目录").task { await load() }.refreshable { await load() }
         .toolbar { if !mine { Button { custom = true } label: { Image(systemName: "plus") }.accessibilityLabel("自定义称号") } }
         .sheet(isPresented: $custom) { CustomTitlePurchaseView { await model.refreshProfile(); await load() } }
+        .alert("称号操作结果", isPresented: Binding(get: { deliveryMessage != nil }, set: { if !$0 { deliveryMessage = nil } })) {
+            Button("好", role: .cancel) { deliveryMessage = nil }
+        } message: { Text(deliveryMessage ?? "") }
         .confirmationDialog(mine ? "确认免费佩戴？" : "确认购买并扣费？", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } }), titleVisibility: .visible) {
             if let item = selected { Button("确认") { selected = nil; submit(item) } }
         } message: { if let selected { Text(title(for: selected) + (mine ? " · 不消耗喵币" : " · \(selected.raw["price"]?.stringValue ?? "以服务器为准") 喵币")) } }
@@ -103,7 +114,11 @@ struct TitlesView: View {
         busy = true
         Task {
             defer { busy = false }
-            do { _ = try await model.api.post(path: mine ? "/titles/wear" : "/titles/buy", fields: ["title": .string(title(for: item))]); await model.refreshProfile(); await load() }
+            do {
+                let value = try await model.api.post(path: mine ? "/titles/wear" : "/titles/buy", fields: ["title": .string(title(for: item))])
+                deliveryMessage = TitleDeliveryResult(json: value, operation: mine ? .wear : .purchase).message
+                await model.refreshProfile(); await load()
+            }
             catch { model.errorMessage = error.localizedDescription }
         }
     }
@@ -171,6 +186,7 @@ struct StoreView: View {
     @State private var items: [RemoteItem] = []
     @State private var buying: RemoteItem?
     @State private var busy = false
+    @State private var purchaseResult: ShopPurchaseResult?
     var body: some View {
         List {
             Section { NavigationLink("我的兑换码") { RedeemCodesView() }; NavigationLink("爱发电订单兑换") { AfdianExchangeView() } }
@@ -188,6 +204,7 @@ struct StoreView: View {
             if items.isEmpty { Text("暂无商品") }
         }
         .navigationTitle("商城").task { await load() }.refreshable { await load() }
+        .sheet(item: $purchaseResult) { result in ShopPurchaseResultView(result: result) }
         .confirmationDialog("确认购买并扣除喵币？", isPresented: Binding(get: { buying != nil }, set: { if !$0 { buying = nil } }), titleVisibility: .visible) {
             if let item = buying { Button("确认购买") { buying = nil; purchase(item) } }
         } message: { if let buying { Text("\(buying.title) · \(buying.raw["price"]?.stringValue ?? "价格以服务器为准") 喵币") } }
@@ -200,8 +217,32 @@ struct StoreView: View {
         busy = true
         Task {
             defer { busy = false }
-            do { _ = try await model.api.post(path: "/shop/buy", fields: ["item_id": .identifier(item.id)]); await model.refreshProfile(); await load() }
+            do {
+                let value = try await model.api.post(path: "/shop/buy", fields: ["item_id": .identifier(item.id)])
+                purchaseResult = ShopPurchaseResult(json: value, item: item.title)
+                await model.refreshProfile(); await load()
+            }
             catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct ShopPurchaseResultView: View {
+    let result: ShopPurchaseResult
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(result.item) {
+                    Text(result.message)
+                    if let code = result.code {
+                        Text(code).font(.body.monospaced()).textSelection(.enabled)
+                        Button("复制兑换码") { UIPasteboard.general.string = code }
+                    } else { Text("本次响应未提供兑换码，可在“我的兑换码”中核对。").font(.caption).foregroundStyle(.secondary) }
+                    NavigationLink("我的兑换码") { RedeemCodesView() }
+                }
+            }.navigationTitle("购买结果")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
 }

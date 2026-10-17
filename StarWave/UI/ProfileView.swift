@@ -8,6 +8,7 @@ struct ProfileView: View {
     @State private var showingPassword = false
     @State private var showingQQBinding = false
     @State private var avatarItem: PhotosPickerItem?
+    @StateObject private var avatarUpload = AccountImageUpload()
     @State private var developerTapCount = 0
     @AppStorage("developer.enabled") private var developerEnabled = false
 
@@ -30,8 +31,8 @@ struct ProfileView: View {
             if let profile = model.profile { ProfileStatisticsView(profile: profile) }
             Section("账户") {
                 PhotosPicker(selection: $avatarItem, matching: .images) {
-                    Label("更换头像", systemImage: "photo")
-                }
+                    Label(avatarUpload.isUploading ? "上传头像中…" : "更换头像", systemImage: "photo")
+                }.disabled(avatarUpload.isUploading)
                 Button { showingEdit = true } label: { Label("编辑资料", systemImage: "person.text.rectangle") }
                 Button { showingPassword = true } label: { Label("修改密码", systemImage: "key") }
                 NavigationLink { ChangeUsernameView() } label: { Label("修改用户名", systemImage: "pencil") }
@@ -76,16 +77,17 @@ struct ProfileView: View {
         .sheet(isPresented: $showingPassword) { ChangePasswordView() }
         .sheet(isPresented: $showingQQBinding) { QQBindingView() }
         .onChange(of: avatarItem) { item in uploadAvatar(item) }
+        .onChange(of: model.sessionStore.generation) { avatarUpload.sessionChanged(to: $0); avatarItem = nil }
+        .onDisappear { avatarUpload.cancel(); avatarItem = nil }
     }
 
     private func uploadAvatar(_ item: PhotosPickerItem?) {
         guard let item else { return }
-        Task {
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
-                _ = try await model.api.upload(path: "/user/avatar", data: data, filename: "avatar.jpg", fieldName: "avatar")
-                await model.refreshProfile()
-            } catch { model.errorMessage = error.localizedDescription }
+        avatarUpload.start(model: model, path: "/user/avatar", filename: "avatar.jpg", fieldName: "avatar", load: {
+            try await item.loadTransferable(type: Data.self)
+        }) { _ in
+            avatarItem = nil
+            await model.refreshProfile()
         }
     }
 
@@ -104,6 +106,10 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("使用帮助") {
+                NavigationLink("查看新手引导") { GettingStartedView() }
+                Button("复制游戏地址") { UIPasteboard.general.string = "mc.lanternwaves.fun:25565" }
+            }
             Section("下载") {
                 Toggle("允许蜂窝网络下载", isOn: $allowCellularDownloads)
                 Text("后台下载会在系统允许的时间内继续；蜂窝网络设置在下次启动后生效。")

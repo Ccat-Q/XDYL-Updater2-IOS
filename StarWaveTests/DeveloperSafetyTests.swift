@@ -46,6 +46,66 @@ final class DeveloperSafetyTests: XCTestCase {
         XCTAssertEqual(DeveloperToolsStore.redactURL("http://[invalid"), "[REDACTED URL]")
     }
 
+    @MainActor func testRedeemCodeAliasesAreRedactedInNestedResponsesAndText() throws {
+        let store = DeveloperToolsStore(directoryURL: try temporaryDirectory())
+        var value = record()
+        value.responseBody = #"{"data":[{"code_text":"FAKE_CODE_TEXT","redeem_code":"FAKE_REDEEM","code":"FAKE_CODE"}],"message":"visible"}"#
+        store.append(value)
+        let safe = try String(contentsOf: XCTUnwrap(store.exportURL(redacted: true)))
+        let raw = try String(contentsOf: XCTUnwrap(store.exportURL(redacted: false)))
+        for secret in ["FAKE_CODE_TEXT", "FAKE_REDEEM", "FAKE_CODE"] {
+            XCTAssertFalse(safe.contains(secret)); XCTAssertTrue(raw.contains(secret))
+        }
+        XCTAssertFalse(DeveloperToolsStore.redact("code_text=FAKE_CODE_TEXT").contains("FAKE_CODE_TEXT"))
+    }
+
+    @MainActor func testClearSessionsRemovesRecoveryAndBothExportsButKeepsUnrelatedFiles() throws {
+        let directory = try temporaryDirectory()
+        let original = directory.appendingPathComponent("sessions.json")
+        try Data("corrupted fake credentials".utf8).write(to: original)
+        let unrelated = directory.appendingPathComponent("unrelated.json")
+        try Data("keep".utf8).write(to: unrelated)
+        let store = DeveloperToolsStore(directoryURL: directory)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let backup = try XCTUnwrap(files.first { $0.lastPathComponent.hasPrefix("sessions.json.recovery-") })
+        store.append(record())
+        let raw = try XCTUnwrap(store.exportURL(redacted: false))
+        let safe = try XCTUnwrap(store.exportURL(redacted: true))
+        store.clearSessions()
+        for url in [original, backup, raw, safe] { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), url.lastPathComponent) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        XCTAssertNil(store.persistenceWarning)
+        XCTAssertTrue(store.sessions.isEmpty)
+    }
+
+    @MainActor func testClearReportsDeleteFailureAndRetainsRecoverableCopy() throws {
+        let directory = try temporaryDirectory()
+        let backup = directory.appendingPathComponent("sessions.json.recovery-test")
+        try Data("fake secret".utf8).write(to: backup)
+        let store = DeveloperToolsStore(directoryURL: directory, deleteFile: { url in
+            if url == backup { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        })
+        store.append(record())
+        XCTAssertFalse(store.clearSessions())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
+        XCTAssertNotNil(store.persistenceWarning)
+        XCTAssertTrue(store.persistenceWarning?.contains(backup.lastPathComponent) == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.sessionsURL.path))
+    }
+
+    @MainActor func testResetAllUsesTheSameDerivedFileCleanup() throws {
+        let directory = try temporaryDirectory()
+        let backup = directory.appendingPathComponent("sessions.json.recovery-reset")
+        try Data("fake secret".utf8).write(to: backup)
+        let store = DeveloperToolsStore(directoryURL: directory)
+        store.append(record())
+        let raw = try XCTUnwrap(store.exportURL(redacted: false))
+        XCTAssertTrue(store.resetAll())
+        for url in [store.sessionsURL, backup, raw] { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+        XCTAssertNil(store.persistenceWarning)
+    }
+
     @MainActor func testRequestAndPerformanceHistorySurviveReopening() throws {
         let directory = try temporaryDirectory()
         let store = DeveloperToolsStore(directoryURL: directory)

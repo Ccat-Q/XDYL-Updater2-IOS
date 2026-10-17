@@ -145,6 +145,30 @@ struct MarketPoint: Identifiable {
     }
 }
 
+enum MarketSort: String, CaseIterable, Identifiable {
+    case magnitude = "按涨跌幅度", gain = "涨幅优先", loss = "跌幅优先", price = "价格从高到低", activity = "成交最活跃"
+    var id: String { rawValue }
+
+    func sorted(_ items: [MarketItem]) -> [MarketItem] {
+        func metric(_ item: MarketItem) -> Double? {
+            switch self {
+            case .price: return item.price ?? item.buy
+            case .activity: return item.operations.map(Double.init)
+            default:
+                guard let value = Double(item.change.replacingOccurrences(of: "%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else { return nil }
+                return self == .magnitude ? abs(value) : value
+            }
+        }
+        return items.enumerated().sorted { left, right in
+            let a = metric(left.element), b = metric(right.element)
+            // Missing data sorts last, not as a fabricated price/change of zero.
+            if let a, let b, a != b { return self == .loss ? a < b : a > b }
+            if (a != nil) != (b != nil) { return a != nil }
+            return left.offset < right.offset
+        }.map(\.element)
+    }
+}
+
 struct RedeemCode: Identifiable {
     let id: String
     let code: String
@@ -152,21 +176,21 @@ struct RedeemCode: Identifiable {
     let used: Bool
     let created: String
     init(json: JSONValue, index: Int) {
-        code = json["code"]?.stringValue ?? json["redeem_code"]?.stringValue ?? json["code_text"]?.stringValue ?? ""
+        code = json.firstNonemptyString("code", "redeem_code", "code_text") ?? ""
         id = json["id"]?.stringValue ?? (code.isEmpty ? "code-\(index)" : code)
-        name = json["item_name"]?.stringValue ?? json["name"]?.stringValue ?? json["title"]?.stringValue ?? "兑换码"
+        name = json.firstNonemptyString("item_name", "item", "name", "title") ?? "兑换码"
         used = json["used"]?.boolValue ?? ["used", "claimed", "redeemed"].contains(json["status"]?.stringValue ?? json["state"]?.stringValue ?? "")
-        created = json["created_at"]?.stringValue ?? json["created_time"]?.stringValue ?? json["time"]?.stringValue ?? ""
+        created = json.firstNonemptyString("created_at", "created_time", "created", "buy_time", "time") ?? ""
     }
 }
 
 enum TitleValidation {
     static func error(for title: String, maxVisible: Int?) -> String? {
-        let visible = TitleColor.removingTokens(from: title)
+        let visible = TitleMarkup.plainText(title)
         if visible.isEmpty { return "称号不能为空" }
         if title.utf16.count > 64 { return "含颜色代码最多 64 个字符" }
         if let limit = maxVisible, visible.utf16.count > limit { return "称号最多 \(limit) 个可见字符" }
-        if visible.range(of: #"^[\u4e00-\u9fa5A-Za-z0-9_·×]+$"#, options: .regularExpression) == nil { return "仅支持中文、字母、数字、_、·、× 和有效颜色代码" }
+        if visible.range(of: #"^[\u4e00-\u9fa5A-Za-z0-9_·×]+$"#, options: .regularExpression) == nil { return "仅支持中文、字母、数字、_、·、× 和有效颜色/格式代码" }
         return nil
     }
 }

@@ -113,7 +113,7 @@ struct DuelArenaView: View {
             ForEach(online) { player in
                 HStack {
                     avatar(for: player)
-                    VStack(alignment: .leading) { Text(player.name); Text("\(player.tier) · \(player.rating) 分").font(.caption).foregroundStyle(.secondary) }
+                    opponentSummary(player)
                     Spacer()
                     Button("挑战") { pendingAction = .challenge(player) }.buttonStyle(.bordered)
                 }
@@ -157,7 +157,7 @@ struct DuelArenaView: View {
             LabeledContent("状态", value: match.state.title)
             if match.state == .searching { LabeledContent("已等待", value: "\(match.waitingSeconds) 秒") }
             if let opponent = match.opponent {
-                HStack { avatar(for: opponent); Text("对手：\(opponent.name)（\(opponent.tier) · \(opponent.rating) 分）") }
+                HStack { avatar(for: opponent); opponentSummary(opponent) }
                 if match.state == .found { Text("确认：我 \(match.meConfirmed ? "已确认" : "未确认") · 对方 \(match.opponentConfirmed ? "已确认" : "未确认")").font(.caption).foregroundStyle(.secondary) }
             }
             if match.state == .starts {
@@ -199,6 +199,7 @@ struct DuelArenaView: View {
             ForEach(incoming) { invite in
                 VStack(alignment: .leading, spacing: 7) {
                     Text("\(invite.player.name) 向你发起挑战")
+                    opponentSummary(invite.player)
                     if let deadline = invite.expiresAt { Text("有效期至 \(deadline.formatted())").font(.caption).foregroundStyle(.secondary) }
                     else if let seconds = invite.expiresIn { Text("剩余 \(seconds) 秒").font(.caption).foregroundStyle(.secondary) }
                     HStack {
@@ -228,6 +229,16 @@ struct DuelArenaView: View {
     @ViewBuilder private func avatar(for player: DuelPlayer) -> some View {
         AsyncImage(url: player.avatarURL) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "person.crop.circle.fill").foregroundStyle(.secondary) }
             .frame(width: 36, height: 36).clipShape(Circle())
+    }
+
+    private func opponentSummary(_ player: DuelPlayer) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(player.name).font(.headline)
+            Text("游戏名：\(player.gameName)").font(.caption)
+            if let username = player.username { Text("论坛：@\(username)").font(.caption) }
+            Text("\(player.tier) · \(player.rating) 分").font(.caption)
+            Text("\(player.wins) 胜 · \(player.losses) 负 · \(player.streakText)").font(.caption)
+        }.foregroundStyle(.secondary)
     }
 
     private func loadAll(resetFlow: Bool = true) async {

@@ -79,6 +79,9 @@ struct YSMPublishView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.raw["model_id"]?.stringValue ?? item.raw["model"]?.stringValue ?? item.title)
                         Text(item.raw["upload_time"]?.stringValue ?? item.raw["uploaded_at"]?.stringValue ?? item.raw["time"]?.stringValue ?? "").font(.caption).foregroundStyle(.secondary)
+                        if let md5 = item.raw.firstNonemptyString("file_md5", "md5") {
+                            Text("MD5：\(md5)").font(.caption.monospaced()).textSelection(.enabled)
+                        }
                         if item.raw["is_duplicate"]?.boolValue == true || item.raw["duplicate"]?.boolValue == true { Text("重复文件授权").font(.caption) }
                     }
                 }
@@ -227,6 +230,7 @@ struct PackDownloadsView: View {
     @State private var changelog = ""
     var body: some View {
         List {
+            PackVersionNoticeView(version: version, changelog: changelog)
             Section("整合包") {
                 if !version.isEmpty { LabeledContent("版本", value: version) }
                 if !changelog.isEmpty { RichContentView(changelog) }
@@ -234,6 +238,7 @@ struct PackDownloadsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(file.name).font(.headline)
                         Text(file.description).font(.caption).foregroundStyle(.secondary)
+                        if let modified = file.modified { Text("更新时间：\(modified)").font(.caption).foregroundStyle(.secondary) }
                         if let url = file.url { Button("下载到“文件”App") { model.downloads.enqueue(url: url, filename: file.name, expectedSHA256: file.sha256) }.buttonStyle(.bordered) }
                     }
                 }
@@ -255,7 +260,7 @@ struct PackDownloadsView: View {
             let value = try await model.api.value(path: "/update/pack-files")
             files = value.rows("files").compactMap { row in
                 guard let name = row["name"]?.stringValue else { return nil }
-                return ResourceFile(name: name, url: ContentURLs.resolve(row["url"]?.stringValue), sha256: row["sha256"]?.stringValue, size: row["size"]?.stringValue.flatMap(Int64.init), kind: "pack_zip")
+                return ResourceFile(name: name, url: ContentURLs.resolve(row["url"]?.stringValue), sha256: row["sha256"]?.stringValue, size: row["size"]?.stringValue.flatMap(Int64.init), kind: "pack_zip", modified: DisplayFormat.timestamp(row["mtime"]))
             }
         } catch is CancellationError { return } catch { model.errorMessage = error.localizedDescription }
         do {
@@ -287,7 +292,8 @@ struct SuggestionsView: View {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 6) {
                         RichContentView(item.detail)
-                        if let status = item.raw["status"]?.stringValue { Text("状态：\(status)").font(.caption).foregroundStyle(.secondary) }
+                        if let status = item.raw["status"]?.stringValue { Text("状态：\(DisplayFormat.suggestionStatus(status))").font(.caption).foregroundStyle(.secondary) }
+                        if let created = DisplayFormat.timestamp(item.raw["created_at"] ?? item.raw["created"] ?? item.raw["time"]) { Text("提交于：\(created)").font(.caption).foregroundStyle(.secondary) }
                         Button("删除", role: .destructive) { deleting = item }.disabled(busy || item.raw["id"] == nil)
                     }
                 }

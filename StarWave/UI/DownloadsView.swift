@@ -80,6 +80,7 @@ struct DownloadsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(item.name).font(.headline).lineLimit(3)
             Text(item.description).font(.caption).foregroundStyle(.secondary)
+            if let modified = item.modified { Text("更新时间：\(modified)").font(.caption).foregroundStyle(.secondary) }
             if let url = item.url {
                 Button {
                     manager.enqueue(url: url, filename: item.name, expectedSHA256: item.sha256)
@@ -124,6 +125,11 @@ struct ResourceFile: Identifiable {
     let sha256: String?
     let size: Int64?
     let kind: String?
+    let modified: String?
+
+    init(name: String, url: URL?, sha256: String?, size: Int64?, kind: String?, modified: String? = nil) {
+        self.name = name; self.url = url; self.sha256 = sha256; self.size = size; self.kind = kind; self.modified = modified
+    }
 
     var id: String { url?.absoluteString ?? name }
     var description: String {
@@ -145,7 +151,8 @@ struct ResourceFile: Identifiable {
                 url: url,
                 sha256: file["sha256"]?.stringValue,
                 size: Int64(file["size"]?.stringValue ?? ""),
-                kind: file["kind"]?.stringValue
+                kind: file["kind"]?.stringValue,
+                modified: DisplayFormat.timestamp(file["mtime"])
             )
         }
     }

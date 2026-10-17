@@ -17,6 +17,8 @@ struct RootView: View {
 
 private struct MainTabView: View {
     @EnvironmentObject private var model: AppModel
+    @AppStorage("guide.mobile.v1.acknowledged") private var guideAcknowledged = false
+    @State private var showingGuide = false
 
     var body: some View {
         TabView {
@@ -34,6 +36,12 @@ private struct MainTabView: View {
         }
         .tint(.accentColor)
         .appTabBarMinimization()
+        .onAppear { if !guideAcknowledged { showingGuide = true } }
+        .sheet(isPresented: $showingGuide, onDismiss: { guideAcknowledged = true }) {
+            NavigationStack {
+                GettingStartedView { guideAcknowledged = true; showingGuide = false }
+            }
+        }
     }
 }
 

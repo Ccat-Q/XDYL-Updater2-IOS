@@ -59,7 +59,7 @@ struct GameBindingsView: View {
 struct PlayerInfoView: View {
     @EnvironmentObject private var model: AppModel
     let player: String
-    @State private var profile: UserProfile?
+    @State private var profile: PublicPlayerProfile?
     @State private var loading = false
 
     var body: some View {
@@ -68,11 +68,28 @@ struct PlayerInfoView: View {
                 Section {
                     HStack {
                         AsyncImage(url: profile.avatarURL) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "person.crop.circle") }.frame(width: 60, height: 60).clipShape(Circle())
-                        VStack(alignment: .leading) { Text(profile.nickname).font(.title3.bold()); Text("@\(profile.username)").foregroundStyle(.secondary) }
+                        VStack(alignment: .leading) {
+                            Text(profile.nickname).font(.title3.bold())
+                            Text(profile.name).foregroundStyle(.secondary)
+                            if let username = profile.username { Text("@\(username)").font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
-                    if !profile.bio.isEmpty { Text(profile.bio) }
+                    LabeledContent("游戏状态", value: profile.online.map { $0 ? "在线" : "离线" } ?? "未知")
+                    LabeledContent("注册状态", value: profile.registered.map { $0 ? "已注册" : "未注册" } ?? "未知")
+                    if let banned = profile.banned { LabeledContent("账号状态", value: banned ? "已封禁" : "正常") }
+                    if let last = profile.lastLogin { LabeledContent("最后登录", value: last) }
+                    if let seconds = profile.seconds { LabeledContent("累计游玩", value: DisplayFormat.duration(seconds)) }
                 }
-                ProfileStatisticsView(profile: profile)
+                if profile.registered != false {
+                    Section("公开资料") {
+                        if let bio = profile.bio { Text(bio) }
+                        if let coins = profile.coins { LabeledContent("喵币", value: coins) }
+                        if let level = profile.level { LabeledContent("等级", value: "Lv.\(level)") }
+                        if let exp = profile.experience { LabeledContent("经验", value: "\(exp)") }
+                        if let points = profile.points { LabeledContent("积分", value: "\(points)") }
+                        if let title = profile.title { LabeledContent("称号") { StyledTitleText(title) } }
+                    }
+                } else { Text("该玩家尚未注册账户；这里只展示服务器提供的游玩状态。更完整的账户资料暂不可用。").font(.caption).foregroundStyle(.secondary) }
             } else if loading { ProgressView("读取玩家资料…") }
             else { Text("暂时无法读取玩家资料").foregroundStyle(.secondary); Button("重新加载") { Task { await load() } } }
         }
@@ -80,7 +97,7 @@ struct PlayerInfoView: View {
     }
     private func load() async {
         loading = true; defer { loading = false }
-        do { profile = UserProfile(json: try await model.api.value(path: "/player/info/\(player)")) }
+        do { profile = PublicPlayerProfile(json: try await model.api.value(path: "/player/info/\(player)"), player: player) }
         catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
     }
 }
@@ -128,7 +145,8 @@ struct EmojiPickerView: View {
     var onSelect: (URL) -> Void
     @State private var emojis: [RemoteItem] = []
     @State private var attachment: PhotosPickerItem?
-    @State private var busy = false
+    @StateObject private var imageUpload = AccountImageUpload()
+    private var busy: Bool { imageUpload.isUploading }
 
     var body: some View {
         NavigationStack {
@@ -146,6 +164,8 @@ struct EmojiPickerView: View {
             .navigationTitle("我的表情").toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .task { await load() }.refreshable { await load() }
             .onChange(of: attachment) { item in upload(item) }
+            .onChange(of: model.sessionStore.generation) { imageUpload.sessionChanged(to: $0); attachment = nil; emojis = [] }
+            .onDisappear { imageUpload.cancel(); attachment = nil }
         }
     }
     private func load() async {
@@ -153,14 +173,12 @@ struct EmojiPickerView: View {
         catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
     }
     private func upload(_ item: PhotosPickerItem?) {
-        guard let item else { return }; busy = true
-        Task {
-            defer { busy = false; attachment = nil }
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else { throw AppError.invalidDownload }
-                _ = try await model.api.upload(path: "/user/emojis", data: data, filename: "emoji.jpg", fieldName: "emoji")
-                await load()
-            } catch { model.errorMessage = error.localizedDescription }
+        guard let item else { return }
+        imageUpload.start(model: model, path: "/user/emojis", filename: "emoji.jpg", fieldName: "emoji", load: {
+            try await item.loadTransferable(type: Data.self)
+        }) { _ in
+            attachment = nil
+            await load()
         }
     }
 }

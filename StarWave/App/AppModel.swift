@@ -14,12 +14,14 @@ final class AppModel: ObservableObject {
     private var sessionObservation: AnyCancellable?
     private var observedGeneration: UUID
     private var authenticationCompletionTask: Task<Void, Never>?
+    private var profileRevision = UUID()
+    private var unreadRevision = UUID()
 
-    init() {
-        let store = SessionStore()
+    init(sessionStore store: SessionStore? = nil, api: APIClient? = nil) {
+        let store = store ?? SessionStore()
         sessionStore = store
         observedGeneration = store.generation
-        api = APIClient(sessionStore: store)
+        self.api = api ?? APIClient(sessionStore: store)
         downloads = .shared
         sessionObservation = store.$accessToken.dropFirst().sink { [weak self] token in
             guard let self else { return }
@@ -67,8 +69,15 @@ final class AppModel: ObservableObject {
 
     func refreshProfile() async {
         let generation = sessionStore.generation
-        do { let value = try await api.profile(); guard generation == sessionStore.generation else { return }; profile = value }
-        catch is CancellationError {} catch { errorMessage = error.localizedDescription }
+        let revision = UUID(); profileRevision = revision
+        do {
+            let value = try await api.profile()
+            guard generation == sessionStore.generation, revision == profileRevision, !Task.isCancelled else { return }
+            profile = value
+        } catch is CancellationError {} catch {
+            guard generation == sessionStore.generation, revision == profileRevision, !Task.isCancelled else { return }
+            errorMessage = error.localizedDescription
+        }
     }
 
     func finishAuthentication() async {
@@ -80,7 +89,12 @@ final class AppModel: ObservableObject {
 
     func refreshUnreadCount() async {
         let generation = sessionStore.generation
-        do { let value = try await api.unreadNotificationCount(); guard generation == sessionStore.generation else { return }; unreadCount = value }
+        let revision = UUID(); unreadRevision = revision
+        do {
+            let value = try await api.unreadNotificationCount()
+            guard generation == sessionStore.generation, revision == unreadRevision, !Task.isCancelled else { return }
+            unreadCount = value
+        }
         catch { /* Notification pages remain available if the badge endpoint differs. */ }
     }
 
@@ -94,7 +108,12 @@ final class AppModel: ObservableObject {
     }
 
     func markAllNotificationsRead() async throws {
+        let generation = sessionStore.generation
+        unreadRevision = UUID()
         try await api.markNotificationsRead()
+        guard generation == sessionStore.generation, !Task.isCancelled else { throw CancellationError() }
+        // Invalidate queries started both before AND during the acknowledgement.
+        unreadRevision = UUID()
         // Reflect a successful server acknowledgement immediately instead of
         // leaving a stale tab badge visible until the next app launch.
         unreadCount = 0

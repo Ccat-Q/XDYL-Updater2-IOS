@@ -387,6 +387,7 @@ private struct DeveloperStorageView: View {
             Section("占用") {
                 LabeledContent("开发者诊断", value: ByteCountFormatter.string(fromByteCount: store.diskUsage(), countStyle: .file))
                 LabeledContent("完整会话", value: "\(store.sessions.count) / 20")
+                if let warning = store.persistenceWarning { Text(warning).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             }
             Section("分项清理") {
                 Button("清除开发者会话", role: .destructive) { store.clearSessions() }
@@ -402,7 +403,11 @@ private struct DeveloperStorageView: View {
         .navigationTitle("数据与缓存")
         .alert("恢复初始状态", isPresented: $showReset) {
             TextField("输入 RESET", text: $resetText)
-            Button("清除", role: .destructive) { store.resetAll(); model.logout() }.disabled(resetText != "RESET")
+            Button("清除", role: .destructive) {
+                let cleared = store.resetAll()
+                model.logout()
+                if !cleared { model.errorMessage = store.persistenceWarning ?? "部分诊断文件未能清除，请稍后重试。" }
+            }.disabled(resetText != "RESET")
             Button("取消", role: .cancel) { }
         } message: { Text("将清除登录状态、调试会话、日志、缓存、下载和环境收藏。") }
     }
