@@ -13,7 +13,10 @@ struct ProfileView: View {
     @AppStorage("developer.enabled") private var developerEnabled = false
 
     var body: some View {
-        List {
+        // PhotosPicker's label is Sendable on newer SDKs; capture a value on
+        // MainActor instead of reading the upload controller inside the label.
+        let avatarIsUploading = avatarUpload.isUploading
+        return List {
             Section {
                 HStack(spacing: 14) {
                     AsyncImage(url: model.profile?.avatarURL) { image in image.resizable().scaledToFill() } placeholder: {
@@ -31,8 +34,8 @@ struct ProfileView: View {
             if let profile = model.profile { ProfileStatisticsView(profile: profile) }
             Section("账户") {
                 PhotosPicker(selection: $avatarItem, matching: .images) {
-                    Label(avatarUpload.isUploading ? "上传头像中…" : "更换头像", systemImage: "photo")
-                }.disabled(avatarUpload.isUploading)
+                    Label(avatarIsUploading ? "上传头像中…" : "更换头像", systemImage: "photo")
+                }.disabled(avatarIsUploading)
                 Button { showingEdit = true } label: { Label("编辑资料", systemImage: "person.text.rectangle") }
                 Button { showingPassword = true } label: { Label("修改密码", systemImage: "key") }
                 NavigationLink { ChangeUsernameView() } label: { Label("修改用户名", systemImage: "pencil") }
