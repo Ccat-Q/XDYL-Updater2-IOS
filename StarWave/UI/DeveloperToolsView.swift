@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct DeveloperToolsView: View {
     @ObservedObject private var store = DeveloperToolsStore.shared
@@ -97,6 +98,25 @@ private struct DeveloperRequestConsoleView: View {
                 }
                 Section("文件上传（可选）") {
                     Button(uploadURL == nil ? "选择文件" : "已选择：\(uploadURL!.lastPathComponent)") { showingImporter = true }
+                        .buttonStyle(.borderless)
+                        .disabled(isSending)
+                        .sheet(isPresented: $showingImporter) {
+                            DeveloperUploadPicker { outcome in
+                                showingImporter = false
+                                switch outcome {
+                                case let .success(url):
+                                    removeUpload()
+                                    uploadURL = url
+                                case let .failure(error):
+                                    model.errorMessage = "选择文件失败：\(error.localizedDescription)"
+                                }
+                            } onCancel: { showingImporter = false }
+                        }
+                    if uploadURL != nil {
+                        Button("移除文件", role: .destructive) { removeUpload() }
+                            .buttonStyle(.borderless)
+                            .disabled(isSending)
+                    }
                     TextField("multipart 字段名", text: $draft.uploadField).textInputAutocapitalization(.never)
                 }
             }
@@ -109,10 +129,9 @@ private struct DeveloperRequestConsoleView: View {
             if let result { DeveloperResponseView(session: result) }
         }
         .navigationTitle("请求控制台")
-        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.data]) { outcome in
-            if case let .success(url) = outcome { uploadURL = url }
-        }
         .sheet(isPresented: $showingMutationConfirmation) { mutationConfirmation }
+        .onChange(of: draft.method) { method in if method == .get { removeUpload() } }
+        .onDisappear { removeUpload() }
         .alert("保存环境", isPresented: $showingSaveEnvironment) {
             TextField("环境名称", text: $saveName)
             Button("保存") { store.saveEnvironment(name: saveName, baseURL: draft.customBaseURL) }
@@ -153,19 +172,61 @@ private struct DeveloperRequestConsoleView: View {
     }
 
     private func send() {
+        guard !isSending else { return }
+        let requestDraft = draft
+        let fileURL = requestDraft.method == .get ? nil : uploadURL
         isSending = true
         Task {
             defer { isSending = false }
-            var data: Data?
-            var filename: String?
-            if let uploadURL {
-                let scoped = uploadURL.startAccessingSecurityScopedResource()
-                defer { if scoped { uploadURL.stopAccessingSecurityScopedResource() } }
-                data = try? Data(contentsOf: uploadURL)
-                filename = uploadURL.lastPathComponent
-            }
-            result = await DeveloperRequestExecutor(sessionStore: model.sessionStore).execute(draft: draft, baseURL: draft.customBaseURL, upload: data, uploadFilename: filename)
+            result = await DeveloperRequestExecutor(sessionStore: model.sessionStore).execute(draft: requestDraft, baseURL: requestDraft.customBaseURL, uploadFileURL: fileURL)
         }
+    }
+
+    private func removeUpload() {
+        // The picker imports a local copy; never remove the provider's original.
+        if let uploadURL { try? FileManager.default.removeItem(at: uploadURL) }
+        uploadURL = nil
+    }
+}
+
+/// Uploads need a local snapshot, rather than an in-place document-opening grant.
+/// Keep this presenter on the file button, separate from request confirmation.
+private struct DeveloperUploadPicker: UIViewControllerRepresentable {
+    let onComplete: (Result<URL, Error>) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DeveloperUploadPicker
+        init(parent: DeveloperUploadPicker) { self.parent = parent }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else {
+                parent.onComplete(.failure(AppError.decoding("未取得所选文件，请重试")))
+                return
+            }
+            do {
+                guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                    throw AppError.decoding("请选择文件，不能上传文件夹或文档包")
+                }
+                parent.onComplete(.success(url))
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                parent.onComplete(.failure(error))
+            }
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { parent.onCancel() }
     }
 }
 

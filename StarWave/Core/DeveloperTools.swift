@@ -403,24 +403,38 @@ final class DeveloperRequestExecutor {
         draft: DeveloperRequestDraft,
         baseURL: String,
         upload: Data? = nil,
-        uploadFilename: String? = nil
+        uploadFilename: String? = nil,
+        uploadFileURL: URL? = nil
     ) async -> DeveloperSession {
         let started = Date()
-        let requestBody = upload == nil ? draft.jsonBody : "multipart: \(uploadFilename ?? "file")"
+        let hasUpload = draft.method != .get && (upload != nil || uploadFileURL != nil)
+        let filename = uploadFilename ?? uploadFileURL?.lastPathComponent ?? "upload.bin"
+        let requestBody = hasUpload ? "multipart: \(filename)" : draft.jsonBody
         do {
             let components = try urlComponents(baseURL: baseURL, path: draft.path, query: draft.query)
             guard let url = components.url else { throw AppError.transport("开发者地址无效") }
-            var request = URLRequest(url: url, timeoutInterval: upload == nil ? 30 : 120)
+            var request = URLRequest(url: url, timeoutInterval: hasUpload ? 120 : 30)
             request.httpMethod = draft.method.rawValue
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             if draft.useAuthentication, let token = sessionStore.accessToken {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
-            if let upload {
+            if hasUpload {
+                let fileData: Data
+                if let uploadFileURL {
+                    let scoped = uploadFileURL.startAccessingSecurityScopedResource()
+                    defer { if scoped { uploadFileURL.stopAccessingSecurityScopedResource() } }
+                    guard uploadFileURL.isFileURL,
+                          try uploadFileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                        throw AppError.decoding("请选择可读取的文件，不能上传文件夹或文档包")
+                    }
+                    // A read failure must stop the request, not silently send JSON.
+                    fileData = try Data(contentsOf: uploadFileURL)
+                } else { fileData = upload ?? Data() }
                 let boundary = "StarWave-Debug-\(UUID().uuidString)"
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
                 let fields = try JSONDecoder().decode(JSONValue.self, from: Data(draft.jsonBody.utf8)).objectValue
-                request.httpBody = try multipart(data: upload, field: draft.uploadField, filename: uploadFilename ?? "upload.bin", boundary: boundary, fields: fields)
+                request.httpBody = try multipart(data: fileData, field: draft.uploadField, filename: filename, boundary: boundary, fields: fields)
             } else if draft.method != .get {
                 let body = draft.jsonBody.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !body.isEmpty { _ = try JSONSerialization.jsonObject(with: Data(body.utf8)); request.httpBody = Data(body.utf8) }
