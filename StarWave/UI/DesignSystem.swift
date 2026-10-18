@@ -6,6 +6,17 @@ import SwiftUI
 /// Glass automatically when built with the iOS 26 SDK. Keep custom glass here so
 /// content views don't accumulate availability checks or nested glass effects.
 extension View {
+    /// Lists below a separate header already have their spacing supplied by
+    /// that header. Keep the tab bar's bottom safe area under system control.
+    @ViewBuilder
+    func appListBelowHeader() -> some View {
+        if #available(iOS 17.0, *) {
+            self.contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            self
+        }
+    }
+
     @ViewBuilder
     func appTabBarMinimization() -> some View {
 #if compiler(>=6.2)

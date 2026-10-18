@@ -14,10 +14,12 @@ struct DownloadsView: View {
                 Text("我的下载").tag(1)
             }
             .pickerStyle(.segmented)
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 12)
             if selection == 0 { catalog }
             else { downloads }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("资源")
         .task { if resources.isEmpty { await load() } }
@@ -34,9 +36,11 @@ struct DownloadsView: View {
             } else {
                 List(resources) { item in resourceRow(item) }
                     .listStyle(.insetGrouped)
+                    .appListBelowHeader()
                     .refreshable { await load() }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var downloads: some View {
@@ -51,7 +55,7 @@ struct DownloadsView: View {
                     }
                     ForEach(manager.records) { record in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(record.filename).font(.headline).lineLimit(2)
+                            Text(record.filename).font(.headline)
                             ProgressView(value: record.progress)
                             HStack {
                                 Text(label(for: record.state)).font(.caption).foregroundStyle(.secondary)
@@ -69,16 +73,19 @@ struct DownloadsView: View {
                             if let message = record.message { Text(message).font(.caption2).foregroundStyle(.secondary) }
                         }
                         .padding(.vertical, 4)
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] }
                     }
                 }
                 .listStyle(.insetGrouped)
+                .appListBelowHeader()
             }
         }
     }
 
     private func resourceRow(_ item: ResourceFile) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(item.name).font(.headline).lineLimit(3)
+            Text(item.name).font(.headline)
             Text(item.description).font(.caption).foregroundStyle(.secondary)
             if let modified = item.modified { Text("更新时间：\(modified)").font(.caption).foregroundStyle(.secondary) }
             if let url = item.url {
@@ -94,6 +101,9 @@ struct DownloadsView: View {
             }
         }
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] }
     }
 
     private func load() async {

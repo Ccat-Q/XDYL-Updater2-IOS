@@ -28,7 +28,7 @@ struct PaymentLifecycle {
     @discardableResult
     mutating func acceptCreated(_ value: JSONValue, generation expected: UUID, now: Date = Date()) -> Bool {
         guard generation == expected, PaymentText.first(in: value.payload, keys: ["order_no"]) != nil else { return false }
-        order = value.payload; deadline = now.addingTimeInterval(15 * 60); stopped = false
+        order = PaymentText.orderPayload(in: value); deadline = now.addingTimeInterval(15 * 60); stopped = false
         message = "等待支付"
         if PaymentText.first(in: order, keys: ["status", "state"]) != nil { _ = apply(value, to: context, now: now) }
         return true
@@ -48,7 +48,7 @@ struct PaymentLifecycle {
     @discardableResult
     mutating func apply(_ value: JSONValue, to request: PaymentRequestContext, now: Date = Date()) -> Bool {
         guard accepts(request), !stopped, !expireIfNeeded(now: now) else { return false }
-        let source = value.payload
+        let source = PaymentText.orderPayload(in: value)
         if let responseNumber = PaymentText.first(in: source, keys: ["order_no"]), responseNumber != request.orderNumber { return false }
         order = .object((order?.objectValue ?? [:]).merging(source.objectValue) { _, new in new })
         let state = (PaymentText.first(in: source, keys: ["status", "state"]) ?? PaymentText.first(in: order, keys: ["status", "state"]) ?? "pending").lowercased()
@@ -80,6 +80,22 @@ struct PaymentLifecycle {
 }
 
 enum PaymentText {
+    static func redeemCode(in response: JSONValue) -> String? {
+        let source = response.payload
+        if let explicit = first(in: source, keys: ["redeem_code", "code_text"]) { return explicit }
+        guard let code = first(in: source, keys: ["code"]) else { return nil }
+        // Root numeric strings are business status codes; nested strings are credentials.
+        guard response["data"] != nil || Int(code) == nil else { return nil }
+        return code
+    }
+
+    static func orderPayload(in response: JSONValue) -> JSONValue {
+        var fields = response.payload.objectValue
+        if response["data"] == nil, response["code"]?.integer != nil { fields.removeValue(forKey: "code") }
+        if let code = redeemCode(in: response) { fields["redeem_code"] = .string(code) }
+        return .object(fields)
+    }
+
     static func first(in value: JSONValue?, keys: [String]) -> String? {
         for key in keys {
             // A numeric envelope code is not a redeem code.
@@ -101,7 +117,7 @@ struct AfdianOrderResult {
     let message: String
     init(json: JSONValue) {
         let source = json.payload
-        if let code = PaymentText.first(in: source, keys: ["redeem_code", "code_text", "code"]) {
+        if let code = PaymentText.redeemCode(in: json) {
             message = "兑换码：\(code)"
         } else if source["claimed"]?.boolValue == true {
             message = PaymentText.first(in: source, keys: ["message"]) ?? PaymentText.first(in: json, keys: ["message"]) ?? "订单已发给其他用户，无法重复领取"

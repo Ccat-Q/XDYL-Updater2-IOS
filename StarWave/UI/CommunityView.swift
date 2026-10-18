@@ -3,28 +3,31 @@ import PhotosUI
 
 struct CommunityView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var categories: [RemoteItem] = []
-    @State private var posts: [RemoteItem] = []
-    @State private var selectedCategory: RemoteItem?
-    @State private var isLoading = false
+    @StateObject private var feed = CommunityFeed()
     @State private var showingCompose = false
-    @State private var page = 1
-    @State private var hasNextPage = false
-    @State private var loadID = UUID()
 
     var body: some View {
-        Group {
-            if isLoading && posts.isEmpty {
+        VStack(spacing: 0) {
+            if let error = feed.categoryError {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("分类加载失败，暂时无法发帖").font(.subheadline)
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Button("重试分类") { Task { await feed.reloadCategories(api: model.api) } }
+                        .disabled(feed.isLoadingCategories)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding()
+            }
+            if feed.isLoading && feed.posts.isEmpty {
                 ProgressView()
-            } else if posts.isEmpty {
+            } else if feed.posts.isEmpty {
                 ScrollView {
                     EmptyStateView(icon: "bubble.left", title: "暂无帖子", message: "下拉刷新，或发布第一条内容。")
-                    if page > 1 { Button("返回上一页") { page -= 1; Task { await load() } } }
+                    if feed.page > 1 { Button("返回上一页") { Task { await feed.load(page: feed.page - 1, category: feed.selectedCategory, api: model.api) } }.disabled(feed.isLoading) }
                 }
-                    .refreshable { await load() }
+                    .refreshable { await feed.refresh(api: model.api) }
             } else {
                 List {
-                  ForEach(posts) { post in
+                  ForEach(feed.posts) { post in
                     NavigationLink(value: post) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(post.title).font(.headline).lineLimit(2)
@@ -40,13 +43,13 @@ struct CommunityView: View {
                     }
                   }
                   HStack {
-                      Button("上一页") { page -= 1; Task { await load() } }.disabled(page <= 1 || isLoading)
-                      Spacer(); Text("第 \(page) 页").font(.caption); Spacer()
-                      Button("下一页") { page += 1; Task { await load() } }.disabled(!hasNextPage || isLoading)
+                      Button("上一页") { Task { await feed.load(page: feed.page - 1, category: feed.selectedCategory, api: model.api) } }.disabled(feed.page <= 1 || feed.isLoading)
+                      Spacer(); Text("第 \(feed.page) 页").font(.caption); Spacer()
+                      Button("下一页") { Task { await feed.load(page: feed.page + 1, category: feed.selectedCategory, api: model.api) } }.disabled(!feed.hasNextPage || feed.isLoading)
                   }.buttonStyle(.borderless)
                 }
                 .listStyle(.plain)
-                .refreshable { await load() }
+                .refreshable { await feed.refresh(api: model.api) }
             }
         }
         .navigationTitle("社区")
@@ -56,41 +59,24 @@ struct CommunityView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button { showingCompose = true } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel("发布帖子")
+                    .disabled(feed.categories.isEmpty || feed.isLoadingCategories)
             }
         }
-        .sheet(isPresented: $showingCompose) { ComposePostView(categories: categories) { page = 1; await load() } }
-        .task { if posts.isEmpty { await loadCategories(); await load() } }
+        .sheet(isPresented: $showingCompose) { ComposePostView(categories: feed.categories) { await feed.load(page: 1, category: feed.selectedCategory, api: model.api) } }
+        .task { await feed.refresh(api: model.api) }
+        .onChange(of: feed.postsError) { error in if let error { model.errorMessage = error } }
     }
 
     private var categoryMenu: some View {
         Menu {
-            Button("全部") { selectedCategory = nil; page = 1; Task { await load() } }
-            ForEach(categories) { category in
-                Button(category.title) { selectedCategory = category; page = 1; Task { await load() } }
+            Button("全部") { Task { await feed.load(page: 1, category: nil, api: model.api) } }
+            ForEach(feed.categories) { category in
+                Button(category.title) { Task { await feed.load(page: 1, category: category, api: model.api) } }
             }
         } label: {
-            Label(selectedCategory?.title ?? "分类", systemImage: "line.3.horizontal.decrease.circle")
+            Label(feed.selectedCategory?.title ?? "分类", systemImage: "line.3.horizontal.decrease.circle")
         }
-    }
-
-    private func loadCategories() async {
-        categories = (try? await model.api.values(path: "/forum/categories")) ?? []
-    }
-
-    private func load() async {
-        isLoading = true
-        let id = UUID(); loadID = id
-        defer { if loadID == id { isLoading = false } }
-        let requestedPage = page
-        var query = [URLQueryItem(name: "page", value: "\(requestedPage)")]
-        if let id = selectedCategory?.id { query.append(.init(name: "category_id", value: id)) }
-        do {
-            let value = try await model.api.value(path: "/forum/posts", query: query)
-            guard loadID == id, !Task.isCancelled else { return }
-            posts = value.rows("posts", "items").enumerated().map { RemoteItem(json: $0.element, index: $0.offset) }
-            if let pages = value.payload["total_pages"]?.integer ?? value.payload["pages"]?.integer { hasNextPage = requestedPage < pages }
-            else { hasNextPage = value.payload["has_next"]?.boolValue ?? !posts.isEmpty }
-        } catch is CancellationError {} catch { if loadID == id { model.errorMessage = error.localizedDescription } }
+        .disabled(feed.isLoading)
     }
 }
 
@@ -123,6 +109,7 @@ private struct ComposePostView: View {
                 .disabled(isUploadingImage)
                 Button("我的表情") { showingEmojis = true }
             }
+            .disabled(isSending)
             .navigationTitle("发布帖子")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
@@ -201,7 +188,7 @@ private struct ForumPostView: View {
                             if let name = reply.raw["reply_to_name"]?.stringValue { Text("回复 @\(name)").font(.caption).foregroundStyle(.secondary) }
                             RichContentView(reply.detail)
                             ItemImagesView(item: reply, height: 150, includeContentImages: false)
-                            Button("回复此楼层") { replyTo = reply }.buttonStyle(.borderless).disabled(reply.raw["id"] == nil)
+                            Button("回复此楼层") { replyTo = reply }.buttonStyle(.borderless).disabled(isReplying || reply.raw["id"] == nil)
                         }
                     }
                 }
@@ -218,6 +205,7 @@ private struct ForumPostView: View {
                 Button("我的表情") { showingEmojis = true }
                 Button(isReplying ? "发送中…" : "发送回复") { submitReply() }.disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isUploadingReplyImage || isReplying)
             }
+            .disabled(isReplying)
             Section {
                 Button { action("/forum/post/\(post.id)/like", successMessage: "点赞成功") } label: {
                     Label("点赞 · \(likeCount)", systemImage: "hand.thumbsup")

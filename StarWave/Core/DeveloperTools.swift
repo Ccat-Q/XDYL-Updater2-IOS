@@ -410,6 +410,10 @@ final class DeveloperRequestExecutor {
         let hasUpload = draft.method != .get && (upload != nil || uploadFileURL != nil)
         let filename = uploadFilename ?? uploadFileURL?.lastPathComponent ?? "upload.bin"
         let requestBody = hasUpload ? "multipart: \(filename)" : draft.jsonBody
+        let generation = sessionStore.generation
+        var bodyFile: URL?
+        var requestBytes = 0
+        defer { if let bodyFile { try? FileManager.default.removeItem(at: bodyFile) } }
         do {
             let components = try urlComponents(baseURL: baseURL, path: draft.path, query: draft.query)
             guard let url = components.url else { throw AppError.transport("开发者地址无效") }
@@ -420,27 +424,35 @@ final class DeveloperRequestExecutor {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
             if hasUpload {
-                let fileData: Data
+                let boundary = "StarWave-Debug-\(UUID().uuidString)"
+                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                let json = try JSONDecoder().decode(JSONValue.self, from: Data(draft.jsonBody.utf8))
+                guard case let .object(values) = json else { throw AppError.decoding("上传表单必须是 JSON 对象") }
+                let fields = values.compactMapValues { $0.stringValue }
                 if let uploadFileURL {
                     let scoped = uploadFileURL.startAccessingSecurityScopedResource()
                     defer { if scoped { uploadFileURL.stopAccessingSecurityScopedResource() } }
-                    guard uploadFileURL.isFileURL,
-                          try uploadFileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                        throw AppError.decoding("请选择可读取的文件，不能上传文件夹或文档包")
-                    }
-                    // A read failure must stop the request, not silently send JSON.
-                    fileData = try Data(contentsOf: uploadFileURL)
-                } else { fileData = upload ?? Data() }
-                let boundary = "StarWave-Debug-\(UUID().uuidString)"
-                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                let fields = try JSONDecoder().decode(JSONValue.self, from: Data(draft.jsonBody.utf8)).objectValue
-                request.httpBody = try multipart(data: fileData, field: draft.uploadField, filename: filename, boundary: boundary, fields: fields)
+                    bodyFile = try await MultipartFileUpload.prepare(fileURL: uploadFileURL, filename: filename, fieldName: draft.uploadField, fields: fields, boundary: boundary)
+                } else {
+                    bodyFile = try await MultipartFileUpload.prepare(data: upload ?? Data(), filename: filename, fieldName: draft.uploadField, fields: fields, boundary: boundary)
+                }
+                if let bodyFile {
+                    requestBytes = (try FileManager.default.attributesOfItem(atPath: bodyFile.path)[.size] as? NSNumber)?.intValue ?? 0
+                }
             } else if draft.method != .get {
                 let body = draft.jsonBody.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !body.isEmpty { _ = try JSONSerialization.jsonObject(with: Data(body.utf8)); request.httpBody = Data(body.utf8) }
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             }
-            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            if draft.useAuthentication, generation != sessionStore.generation { throw AppError.notAuthenticated }
+            let data: Data
+            let response: URLResponse
+            if let bodyFile { (data, response) = try await session.upload(for: request, fromFile: bodyFile) }
+            else {
+                requestBytes = request.httpBody?.count ?? 0
+                (data, response) = try await session.data(for: request)
+            }
             let http = response as? HTTPURLResponse
             let result = DeveloperSession(
                 method: draft.method.rawValue, url: url.absoluteString, authenticated: draft.useAuthentication,
@@ -448,7 +460,7 @@ final class DeveloperRequestExecutor {
                 responseHeaders: (http?.allHeaderFields ?? [:]).reduce(into: [:]) { $0[String(describing: $1.key)] = String(describing: $1.value) },
                 responseBody: String(data: data, encoding: .utf8) ?? data.base64EncodedString(),
                 durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000),
-                requestBytes: request.httpBody?.count ?? 0, responseBytes: data.count, errorMessage: nil
+                requestBytes: requestBytes, responseBytes: data.count, errorMessage: nil
             )
             store.append(result)
             return result
@@ -456,7 +468,7 @@ final class DeveloperRequestExecutor {
             let result = DeveloperSession(
                 method: draft.method.rawValue, url: baseURL + draft.path, authenticated: draft.useAuthentication,
                 requestBody: requestBody, statusCode: nil, responseHeaders: [:], responseBody: "",
-                durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), requestBytes: upload?.count ?? draft.jsonBody.utf8.count,
+                durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), requestBytes: requestBytes,
                 responseBytes: 0, errorMessage: error.localizedDescription
             )
             store.append(result)
@@ -479,19 +491,6 @@ final class DeveloperRequestExecutor {
         return components
     }
 
-    private func multipart(data: Data, field: String, filename: String, boundary: String, fields: [String: JSONValue]) throws -> Data {
-        let image = ["image", "avatar", "emoji"].contains(field) ? try ImageUpload.prepare(data: data, filename: filename) : nil
-        var body = Data()
-        for key in fields.keys.sorted() {
-            if let value = fields[key]?.stringValue { body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n".utf8)) }
-        }
-        body.append(Data("--\(boundary)\r\n".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"\(field)\"; filename=\"\(image?.filename ?? filename)\"\r\n".utf8))
-        body.append(Data("Content-Type: \(image?.mimeType ?? "application/octet-stream")\r\n\r\n".utf8))
-        body.append(image?.data ?? data)
-        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-        return body
-    }
 }
 
 @MainActor

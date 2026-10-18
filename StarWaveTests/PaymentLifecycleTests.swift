@@ -89,4 +89,40 @@ final class PaymentLifecycleTests: XCTestCase {
         XCTAssertEqual(AfdianOrderResult(json: try json(#"{"code":200,"data":{"paid":true,"claimed":false,"code":""}}"#)).message, "订单已支付，可以领取")
         XCTAssertEqual(AfdianOrderResult(json: try json(#"{"data":{"claimed":true,"redeem_code":"","code_text":"CODE"}}"#)).message, "兑换码：CODE")
     }
+
+    func testRootStatusCodesAreNotCredentialsAcrossAllPaymentResults() throws {
+        for raw in [#"{"code":200,"paid":true}"#, #"{"code":"200","paid":true}"#] {
+            let response = try json(raw)
+            XCTAssertNil(PaymentText.redeemCode(in: response))
+            XCTAssertNil(ShopPurchaseResult(json: response, item: "Test").code)
+            XCTAssertEqual(AfdianOrderResult(json: response).message, "订单已支付，可以领取")
+        }
+        var flow = try makeFlow()
+        XCTAssertTrue(flow.apply(try json(#"{"code":"200","status":"paid"}"#), to: flow.context, now: start))
+        XCTAssertTrue(flow.message.contains("生成中"))
+        XCTAssertFalse(flow.message.contains("200"))
+    }
+
+    func testCreationDoesNotCacheRootBusinessCodeForLaterPaidResponse() throws {
+        var flow = PaymentLifecycle()
+        let generation = flow.beginCreation()
+        XCTAssertTrue(flow.acceptCreated(try json(#"{"code":"200","order_no":"A","status":"pending"}"#), generation: generation, now: start))
+        XCTAssertNil(flow.order?["code"])
+        XCTAssertTrue(flow.apply(try json(#"{"data":{"status":"paid"}}"#), to: flow.context, now: start))
+        XCTAssertTrue(flow.message.contains("生成中"))
+    }
+
+    func testNestedNumericStringCredentialAndExplicitAliasesArePreserved() throws {
+        for raw in [#"{"code":"200","data":{"code":"200"}}"#, #"{"code":"200","redeem_code":"200"}"#, #"{"code":200,"code_text":"200"}"#] {
+            let response = try json(raw)
+            XCTAssertEqual(PaymentText.redeemCode(in: response), "200")
+            XCTAssertEqual(ShopPurchaseResult(json: response, item: "Test").code, "200")
+            XCTAssertEqual(AfdianOrderResult(json: response).message, "兑换码：200")
+        }
+        var flow = PaymentLifecycle()
+        let generation = flow.beginCreation()
+        XCTAssertTrue(flow.acceptCreated(try json(#"{"data":{"order_no":"A","code":"200"}}"#), generation: generation, now: start))
+        XCTAssertTrue(flow.apply(try json(#"{"code":"200","status":"paid"}"#), to: flow.context, now: start))
+        XCTAssertEqual(flow.message, "支付成功。兑换码：200")
+    }
 }

@@ -42,6 +42,36 @@ final class MultipartFileUploadTests: XCTestCase {
         XCTAssertTrue(body.suffix(16).elementsEqual(Data("\r\n--Boundary--\r\n".utf8)))
     }
 
+    func testImageFileAndDataUseDetectedMIMEAndExtension() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("photo.bin")
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
+        try png.write(to: file)
+        let fromFile = try await MultipartFileUpload.prepare(fileURL: file, filename: "photo.bin", fieldName: "image", fields: [:], boundary: "Boundary")
+        defer { try? FileManager.default.removeItem(at: fromFile) }
+        let fromData = try await MultipartFileUpload.prepare(data: png, filename: "photo.bin", fieldName: "image", fields: [:], boundary: "Boundary")
+        defer { try? FileManager.default.removeItem(at: fromData) }
+        let body = try Data(contentsOf: fromFile)
+        XCTAssertEqual(body, try Data(contentsOf: fromData))
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("filename=\"photo.png\"\r\nContent-Type: image/png"))
+        XCTAssertEqual(try Data(contentsOf: file), png)
+    }
+
+    func testOversizedImageIsRejectedWithoutMultipartArtifacts() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("large.png")
+        try Data(repeating: 0, count: 5 * 1024 * 1024 + 1).write(to: file)
+        let before = try multipartFiles()
+        do {
+            let output = try await MultipartFileUpload.prepare(fileURL: file, filename: "large.png", fieldName: "avatar", fields: [:], boundary: "Boundary")
+            try? FileManager.default.removeItem(at: output)
+            XCTFail("Oversized image accepted")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("5 MB")) }
+        XCTAssertEqual(try multipartFiles(), before)
+    }
+
     func testQuotesAndBackslashesCannotTerminateMultipartParameters() async throws {
         let folder = try directory()
         defer { try? FileManager.default.removeItem(at: folder) }

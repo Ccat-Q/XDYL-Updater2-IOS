@@ -146,12 +146,7 @@ struct ShopPurchaseResult: Identifiable {
         self.item = item
         // Envelope `code:200` is a business status, never a redeem credential.
         let source = json["data"] ?? json
-        let candidate = source.firstNonemptyString("redeem_code", "code_text")
-        let rawCode: String?
-        if case let .string(value)? = source["code"], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           json["data"] != nil || source["code"]?.integer == nil { rawCode = value }
-        else { rawCode = nil }
-        code = candidate ?? rawCode
+        code = PaymentText.redeemCode(in: json)
         message = json.firstNonemptyString("message") ?? source.firstNonemptyString("message") ?? "购买成功"
     }
 }

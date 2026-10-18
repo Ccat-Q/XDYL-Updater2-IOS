@@ -3,11 +3,15 @@ import XCTest
 
 private final class DeveloperUploadURLProtocol: URLProtocol {
     static var handler: ((URLRequest) -> Void)?
+    static var failure: Error?
+    static var holdsResponse = false
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.handler?(request)
+        if Self.holdsResponse { return }
+        if let failure = Self.failure { client?.urlProtocol(self, didFailWithError: failure); return }
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("{}".utf8))
@@ -36,6 +40,8 @@ final class DeveloperFileUploadTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         addTeardownBlock {
             DeveloperUploadURLProtocol.handler = nil
+            DeveloperUploadURLProtocol.failure = nil
+            DeveloperUploadURLProtocol.holdsResponse = false
             try? FileManager.default.removeItem(at: folder)
         }
         let configuration = URLSessionConfiguration.ephemeral
@@ -45,7 +51,7 @@ final class DeveloperFileUploadTests: XCTestCase {
         return (DeveloperRequestExecutor(sessionStore: session, session: URLSession(configuration: configuration), store: store), folder)
     }
 
-    @MainActor func testSelectedCustomExtensionFileIsSentAsMultipartWithItsFields() async throws {
+    @MainActor func testSelectedCustomExtensionFileIsUploadedAndPreparedBodyIsCleaned() async throws {
         let (executor, folder) = try makeExecutor()
         let file = folder.appendingPathComponent("model.ysm")
         let content = Data("model-test-bytes".utf8)
@@ -54,18 +60,56 @@ final class DeveloperFileUploadTests: XCTestCase {
         DeveloperUploadURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertTrue(request.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("multipart/form-data;") == true)
-            let body = String(decoding: DeveloperUploadURLProtocol.body(request), as: UTF8.self)
-            XCTAssertTrue(body.contains("name=\"skin_file\"; filename=\"model.ysm\""))
-            XCTAssertTrue(body.contains("model-test-bytes"))
-            XCTAssertTrue(body.contains("name=\"player_name\"\r\n\r\ncat"))
             sent.fulfill()
         }
+        // File-upload bodies need not be exposed by URLProtocol. Exact multipart
+        // bytes and field preservation are covered by MultipartFileUploadTests.
+        let before = try multipartFiles()
         let draft = DeveloperRequestDraft(path: "/upload_v2", method: .post, jsonBody: #"{"player_name":"cat"}"#, uploadField: "skin_file")
         let result = await executor.execute(draft: draft, baseURL: "https://example.test", uploadFileURL: file)
         await fulfillment(of: [sent], timeout: 2)
         XCTAssertEqual(result.statusCode, 200)
         XCTAssertNil(result.errorMessage)
+        XCTAssertGreaterThan(result.requestBytes, content.count)
+        XCTAssertEqual(try multipartFiles(), before)
         XCTAssertEqual(try Data(contentsOf: file), content)
+    }
+
+    private func multipartFiles() throws -> Set<String> {
+        Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+            .filter { $0.hasPrefix("starwave-multipart-") })
+    }
+
+    @MainActor func testFailedFileUploadCleansPreparedBodyAndPreservesSource() async throws {
+        let (executor, folder) = try makeExecutor()
+        let file = folder.appendingPathComponent("source.zip")
+        let bytes = Data("keep original".utf8)
+        try bytes.write(to: file)
+        let before = try multipartFiles()
+        DeveloperUploadURLProtocol.failure = URLError(.timedOut)
+        let result = await executor.execute(draft: DeveloperRequestDraft(method: .post), baseURL: "https://example.test", uploadFileURL: file)
+        XCTAssertNil(result.statusCode)
+        XCTAssertNotNil(result.errorMessage)
+        XCTAssertGreaterThan(result.requestBytes, bytes.count)
+        XCTAssertEqual(try multipartFiles(), before)
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+    }
+
+    @MainActor func testCancelledUploadCleansPreparedBody() async throws {
+        let (executor, folder) = try makeExecutor()
+        let file = folder.appendingPathComponent("source.zip")
+        try Data("bytes".utf8).write(to: file)
+        let before = try multipartFiles()
+        let sent = expectation(description: "upload started")
+        DeveloperUploadURLProtocol.holdsResponse = true
+        DeveloperUploadURLProtocol.handler = { _ in sent.fulfill() }
+        let task = Task { await executor.execute(draft: DeveloperRequestDraft(method: .post), baseURL: "https://example.test", uploadFileURL: file) }
+        await fulfillment(of: [sent], timeout: 2)
+        task.cancel()
+        let result = await task.value
+        XCTAssertNotNil(result.errorMessage)
+        XCTAssertEqual(try multipartFiles(), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 
     @MainActor func testMissingAttachmentFailsWithoutSendingAJSONFallback() async throws {
