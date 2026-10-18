@@ -37,4 +37,4 @@ xcodebuild build-for-testing \
 
 旧服务的 `api.lanternwaves.fun:8080` 和 `:5551` 仅支持 HTTP。为保持接口不变，应用对 `api.lanternwaves.fun` 配置了 ATS 例外，并在代码中把明文请求限制到上述端口。访问令牌只存放在 Keychain；但服务端明文传输风险无法由客户端消除。
 
-逆向确认的接口和实现状态见 [API compatibility](docs/API_COMPATIBILITY.md)。
+完整已知接口、请求/返回体、用途与鉴权见 [API 接口手册](docs/api/README.md)；历史兼容决策见 [API compatibility](docs/api/API_COMPATIBILITY.md)。

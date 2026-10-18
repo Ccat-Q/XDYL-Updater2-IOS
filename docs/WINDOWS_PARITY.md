@@ -1,5 +1,7 @@
 # Windows 功能适配记录（2.2.2）
 
+当前逐接口协议统一见 [API 接口手册](api/README.md)，历史协议兼容依据见 [API compatibility](api/API_COMPATIBILITY.md)。
+
 参考 EXE：`ModUpdater2（2）.exe`，SHA-256 `59a7b5dc6e79b578ef40c1130b0a30c982ee901aecfeaa430fe915295fc6291e`。
 
 ## 已实现
