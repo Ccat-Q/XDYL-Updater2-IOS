@@ -97,7 +97,7 @@ struct PlayerInfoView: View {
     }
     private func load() async {
         loading = true; defer { loading = false }
-        do { profile = PublicPlayerProfile(json: try await model.api.value(path: "/player/info/\(player)"), player: player) }
+        do { profile = PublicPlayerProfile(json: try await model.api.publicPlayerInfo(player: player), player: player) }
         catch is CancellationError {} catch { model.errorMessage = error.localizedDescription }
     }
 }

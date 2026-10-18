@@ -136,6 +136,17 @@ final class APIClient: ObservableObject {
         UserProfile(json: try await send(APIRequest(path: "/user/profile")))
     }
 
+    func publicPlayerInfo(player: String) async throws -> JSONValue {
+        // Validate a single path segment; a displayed identity must not introduce
+        // another route or query when reused by rankings and public profiles.
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard !player.isEmpty, player != ".", player != "..",
+              player.rangeOfCharacter(from: allowed.inverted) == nil else {
+            throw AppError.decoding("玩家标识无效")
+        }
+        return try await value(path: "/player/info/\(player)")
+    }
+
     func values(path: String, query: [URLQueryItem] = []) async throws -> [RemoteItem] {
         RemoteItem.list(from: try await send(APIRequest(path: path, query: query)))
     }

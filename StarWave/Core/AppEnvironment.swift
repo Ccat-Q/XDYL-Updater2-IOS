@@ -41,7 +41,7 @@ enum AppEnvironment {
         .init(title: "我的物品", icon: "shippingbox", path: "/user/items"),
         .init(title: "YSM 皮肤", icon: "person.crop.square", path: "/user/items"),
         .init(title: "在线玩家", icon: "person.3", path: "/server/players"),
-        .init(title: "累计喵币排行", icon: "trophy", path: "/rank/coins"),
+        .init(title: "喵币排行", icon: "trophy", path: "/rank/coins"),
         .init(title: "在线排行", icon: "clock", path: "/rank/playtime"),
         .init(title: "游戏奖励", icon: "giftcard", path: "/playtime/rewards"),
         .init(title: "称号目录", icon: "tag", path: "/titles/catalog"),
