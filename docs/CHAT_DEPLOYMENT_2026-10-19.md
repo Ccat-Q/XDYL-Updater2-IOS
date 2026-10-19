@@ -8,7 +8,7 @@
 | --- | --- |
 | 域名 | `https://nu-pe-chat.cc.cd`，保留既有 Custom Domain |
 | Worker | `nu-chat`，更新原实例，没有创建同名替代服务 |
-| 当前版本 | `34d2826d-f7af-4c52-bf84-3b670183d511` |
+| 当前版本 | `3e856dce-6fa7-4a7d-bb3b-a6944a9375d2`（iOS只读元数据补齐）；首发V2为`34d2826d-f7af-4c52-bf84-3b670183d511` |
 | 版本标签 | `v2-20261019` |
 | D1 | 原 `nu-chat-db`，ID `fbda1269-6747-46f9-93f0-828bb15dc14a` |
 | schema | 四项migration已应用，v2_schema=4 |
@@ -56,6 +56,8 @@ wrangler deploy --config wrangler.production.jsonc
 线上只做无凭据读取/预检与管理元数据核对，不声称认证后实际收发已联调。此前本地41项测试含真实workerd/D1/R2及双曲线向量；不替代生产真机验收。
 
 ## 当前明确缺口
+
+后续iOS实现获用户授权后，已补充只读peer_username、sender_username/recipient_username和对应版本sender_public_key并重新部署。42项本地后端测试通过，其中包含“先发送→换钥→首次补拉→用原版本公钥解密”的回归；不改请求或schema，不重新生成秘密，不写聊天内容。iOS客户端代码现已加入，编译/测试结果另见[IOS_CHAT.md](IOS_CHAT.md)，以下iOS“未实施”是首次部署时的历史状态，不是后续客户端代码现状。
 
 - Cloudflare账号R2列表接口返回10042“Please enable R2 through the Cloudflare Dashboard”。**未开通账单、未创建bucket、没有R2绑定。** 因此能力列表正确不含encrypted_backups/device_history_transfer；对应存储功能不可用，不能假装已部署。后续需用户先开通R2并补齐Wrangler授权，再创建私有bucket、添加生产绑定后重新部署。
 - iOS聊天页面/持钥存储/双协议接入尚未实施；仅后端上线不会自动给当前IPA增加互聊能力。

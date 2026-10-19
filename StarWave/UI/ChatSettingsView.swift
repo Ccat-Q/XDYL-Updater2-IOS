@@ -109,6 +109,7 @@ private struct ChatDevicesView: View {
     @EnvironmentObject private var chat: ChatController
     @State private var devices: [JSONValue] = []
     @State private var keys: [JSONValue] = []
+    @State private var accountFingerprint = ""
     @State private var compatibility = "尚未读取"
     @State private var revokeID: String?
     @State private var confirmNew = false
@@ -128,6 +129,11 @@ private struct ChatDevicesView: View {
                     }
                 }
                 Text("只展示公钥指纹，不展示或复制私钥。请通过带外方式核对联系人的设备集合指纹。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("本账号设备集合指纹") {
+                Text(accountFingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text("让联系人与其查询页面展示的集合指纹核对；设备增减或公钥变化会改变此值。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("旧安卓互通") {
@@ -168,6 +174,16 @@ private struct ChatDevicesView: View {
             devices = try await chat.json("/chat/v2/devices")["devices"].chatArray()
             let own = try await chat.json("/chat/v2/users/\(ChatValidation.segment(chat.username))/keys")
             keys = own["devices"]?.arrayValue.first(where: { $0["device_id"]?.stringValue == chat.currentDeviceID })?["keys"]?.arrayValue ?? []
+            var publicKeys: [String: JSONValue] = [:]
+            for device in own["devices"]?.arrayValue ?? [] {
+                for key in device["keys"]?.arrayValue ?? [] { publicKeys[try key.chatString("key_id")] = key["public_key"] }
+            }
+            let protocols = try await chat.json("/chat/v2/users/\(ChatValidation.segment(chat.username))/protocols")
+            for key in protocols["legacy_public_keys"]?.arrayValue ?? [] {
+                let alg = try key.chatString("algorithm"), pub = try key.chatString("public_key")
+                publicKeys[ChatCrypto.legacyID(alg, pub)] = .string(pub)
+            }
+            accountFingerprint = ChatCrypto.digest(try ChatCrypto.canonical(.object(publicKeys)))
             let legacy = try await chat.json("/chat/v2/devices/\(chat.currentDeviceID)/legacy")
             compatibility = legacy["enabled"]?.boolValue == true ? "兼容主设备：\(legacy["device_id"]?.stringValue ?? "")" : "未启用旧协议兼容"
         }

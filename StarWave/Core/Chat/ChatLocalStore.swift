@@ -91,7 +91,7 @@ actor ChatLocalStore {
     func clearLocalHistory() throws {
         // Keep cursor, encryption keys and trust pins. This is NOT a key reset
         // and must not replay already acknowledged history on the next launch.
-        try execute("DELETE FROM records WHERE kind IN ('message','event','pending','draft')")
+        try execute("DELETE FROM records WHERE kind IN ('message','event','pending','draft','preparedHistory','historyChunk','transferTarget')")
     }
     func mergeRestored(_ messages: [ChatMessage], filters: [JSONValue]) throws {
         try execute("BEGIN IMMEDIATE")

@@ -40,6 +40,7 @@ final class ChatController: ObservableObject {
     var namespace: String?
     var connectionTask: Task<ChatConnection, Error>?
     var syncTask: Task<Void, Error>?
+    private var localWriteInProgress = false
     private var monitorID = UUID()
     private var mainGeneration: UUID
     private let defaults: UserDefaults
@@ -125,7 +126,7 @@ final class ChatController: ObservableObject {
             let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
             let transport = ChatTransport(relay: relay)
             var succeeded = false; defer { if !succeeded { transport.cancel() } }
-            func valid() throws {
+            @MainActor func valid() throws {
                 try Task.checkCancellation()
                 guard self.ticket == stamp, self.namespace == ns, self.sessionStore.generation == generation, self.enabled, self.foreground else { throw CancellationError() }
             }
@@ -172,10 +173,20 @@ final class ChatController: ObservableObject {
         try current(c); return value["data"] ?? value
     }
     func sync(_ c: ChatConnection) async throws {
+        if localWriteInProgress { return }
         if let task = syncTask { return try await task.value }
         let task = Task { @MainActor in try await self.syncPages(c) }; syncTask = task
         defer { if ticket == c.ticket { syncTask = nil } }
         try await task.value
+    }
+    func localWrite<T>(_ c: ChatConnection, _ action: () async throws -> T) async throws -> T {
+        // Sync can suspend during decryption/network IO. Serialize local edits
+        // with the full page commit so an older snapshot cannot resurrect a
+        // cleared message or discard a just-created pending row in memory.
+        while localWriteInProgress { try await Task.sleep(nanoseconds: 10_000_000); try current(c) }
+        localWriteInProgress = true; defer { localWriteInProgress = false }
+        if let task = syncTask { try await task.value }
+        try current(c); return try await action()
     }
     private func syncPages(_ c: ChatConnection) async throws {
         try current(c)

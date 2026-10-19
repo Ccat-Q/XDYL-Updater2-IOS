@@ -16,7 +16,7 @@ struct ChatKeyRing: Codable {
     var archiveKeys: [ChatPrivateKey]
     var storeKey: Data
     static func create() throws -> ChatKeyRing {
-        ChatKeyRing(deviceID: UUID().uuidString.lowercased(), revision: "0", keys: try ChatCrypto.newKeys(), archiveKeys: [], storeKey: ChatCrypto.random(32))
+        ChatKeyRing(deviceID: UUID().uuidString.lowercased(), revision: "0", keys: try ChatCrypto.newKeys(), archiveKeys: [], storeKey: try ChatCrypto.random(32))
     }
     func key(_ id: String) throws -> ChatPrivateKey {
         guard let key = (keys + archiveKeys).first(where: { $0.keyID == id }) else { throw ChatFailure.invalid("此设备缺少解密所需的旧私钥，请从可信设备或加密备份恢复。") }; return key

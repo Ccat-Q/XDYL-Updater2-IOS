@@ -25,6 +25,7 @@ extension ChatController {
     }
     func trust(_ inspection: ChatPeerInspection, mode: ChatProtocolMode = .automatic, note: String? = nil) async throws {
         let c = try await connect(); try current(c)
+        try await localWrite(c) {
         var peer = peers.first(where: { $0.subject == inspection.subject }) ?? ChatPeer(subject: inspection.subject, username: inspection.username)
         peer.fingerprint = inspection.fingerprint; peer.username = inspection.username; peer.mode = mode
         if let note { peer.note = String(note.prefix(64)) }
@@ -44,10 +45,14 @@ extension ChatController {
         }
         for message in restored { try await c.store.put(message, kind: "message", id: message.id) }
         try current(c); messages = restored
+        }
     }
     func saveContact(_ peer: ChatPeer) async throws {
-        let c = try await connect(); try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c)
-        peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
+        let c = try await connect()
+        try await localWrite(c) {
+            try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c)
+            peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
+        }
     }
     func send(_ text: String, to peer: ChatPeer) async throws {
         guard !busy else { throw ChatFailure.invalid("正在准备发送，请稍候。") }
@@ -85,8 +90,10 @@ extension ChatController {
         try current(c)
         let message = ChatMessage(id: "pending:" + id, clientID: id, conversationID: conversations.first(where: { $0.peerSubject == peer.subject })?.id ?? "", sequence: "0", sender: c.subject, recipient: peer.subject, text: text, problem: nil, acceptedAt: now, status: "pending", raw: nil, peerSubject: peer.subject)
         let pending = ChatPendingSend(id: id, peerSubject: peer.subject, path: path, body: request, message: message)
-        try await c.store.savePending(pending); try current(c)
-        self.pending.append(pending); messages.append(message)
+        try await localWrite(c) {
+            try await c.store.savePending(pending); try current(c)
+            self.pending.append(pending); messages.append(message)
+        }
         try await submit(pending, c: c)
     }
     func retry(_ pending: ChatPendingSend) async throws { let c = try await connect(); try await submit(pending, c: c) }
@@ -96,13 +103,19 @@ extension ChatController {
         let result = try await c.transport.json(pending.path, token: c.token, method: "POST", body: pending.body)
         try current(c)
         if pending.path == "/chat/v2/messages" {
+            try await localWrite(c) {
             let accepted = result["data"] ?? .null
             var message = pending.message
             message.id = try accepted.chatString("message_id"); message.conversationID = try accepted.chatString("conversation_id")
             message.sequence = try accepted.chatSequence("conversation_seq"); message.acceptedAt = try accepted.chatInt64("accepted_at_ms"); message.status = "accepted"
+            if let synced = messages.first(where: { $0.id == message.id }) {
+                message.raw = synced.raw
+                if ["received", "read", "hidden", "recalled"].contains(synced.status) { message.status = synced.status; message.text = synced.text }
+            }
             let cursor = try await c.store.get(String.self, kind: "state", id: "cursor")
             try await c.store.commit(events: [], messages: [message], cursor: cursor)
             try current(c); messages.removeAll { $0.id == pending.message.id || $0.id == message.id }; messages.append(message)
+            }
         }
         // Legacy response only contains numeric seq. Its canonical ID arrives
         // in sync; keep outbox until that sync commit succeeds.
@@ -119,6 +132,8 @@ extension ChatController {
     }
     func markRead(_ message: ChatMessage) async throws {
         guard message.recipient == subject, message.text != nil, message.problem == nil, message.status == "incoming" else { return }
+        if let conv = conversations.first(where: { $0.id == message.conversationID }), conv.historyGap && conv.unread > conv.availableUnread { return }
+        guard !messages.contains(where: { $0.conversationID == message.conversationID && $0.recipient == subject && $0.status == "incoming" && $0.text == nil && (Int64($0.sequence) ?? Int64.max) <= (Int64(message.sequence) ?? 0) }) else { return }
         let c = try await connect()
         // read only after visible, decrypted message and page ACK has completed.
         if let task = syncTask { try await task.value }
@@ -128,8 +143,11 @@ extension ChatController {
     func hide(_ message: ChatMessage) async throws {
         _ = try await json("/chat/v2/messages/\(message.id)", method: "DELETE")
         let c = try await connect(); var hidden = message; hidden.status = "hidden"; hidden.text = nil; hidden.raw = nil
-        try await c.store.put(hidden, kind: "message", id: hidden.id); try current(c)
-        messages.removeAll { $0.id == hidden.id }; messages.append(hidden); try await refreshConversations(c)
+        try await localWrite(c) {
+            try await c.store.put(hidden, kind: "message", id: hidden.id); try current(c)
+            messages.removeAll { $0.id == hidden.id }; messages.append(hidden)
+        }
+        try await refreshConversations(c)
     }
     func recall(_ message: ChatMessage) async throws {
         _ = try await json("/chat/v2/messages/\(message.id)/recall", method: "POST", body: .object([:]))
@@ -152,10 +170,12 @@ extension ChatController {
         let c = try await connect()
         var query = [URLQueryItem(name: "limit", value: "100")]; if let before { query.append(URLQueryItem(name: "before", value: before)) }
         let result = try await json("/chat/v2/conversations/\(conv.id)/messages", query: query)
+        try await localWrite(c) {
         for event in try result["messages"].chatArray() {
             let message = try decodeMessage(event, c: c)
             // Do not turn a local/remote read back into accepted when paging.
             if !messages.contains(where: { $0.id == message.id }) { try await c.store.put(message, kind: "message", id: message.id); try current(c); messages.append(message) }
+        }
         }
         return result["has_more"]?.boolValue == true ? result["next_before"]?.stringValue : nil
     }
@@ -169,18 +189,23 @@ extension ChatController {
     }
     func createNewDevice() async throws {
         guard let ns = namespace else { return }
+        let stamp = ticket
         let vault = ChatKeyVault(namespace: ns); var ring = try vault.load() ?? ChatKeyRing.create()
         ring.archiveKeys += ring.keys; ring.keys = try ChatCrypto.newKeys(); ring.deviceID = UUID().uuidString.lowercased(); ring.revision = "0"
         let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
         try await store.remove(kind: "state", id: "cursor")
+        guard ticket == stamp, namespace == ns else { throw CancellationError() }
         try vault.save(ring); suspend(); currentDeviceID = ring.deviceID; lifecycleRevision = UUID()
     }
     func clearLocal() async throws {
-        let c = try await connect(); try await c.store.clearLocalHistory(); try current(c); messages = []; pending = []
+        let c = try await connect()
+        try await localWrite(c) { try await c.store.clearLocalHistory(); try current(c); messages = []; pending = [] }
     }
     func discardPending(_ item: ChatPendingSend) async throws {
         let c = try await connect()
+        try await localWrite(c) {
         try await c.store.remove(kind: "pending", id: item.id); try await c.store.remove(kind: "message", id: item.message.id)
         try current(c); pending.removeAll { $0.id == item.id }; messages.removeAll { $0.id == item.message.id }
+        }
     }
 }

@@ -166,7 +166,10 @@ struct ChatNewContactView: View {
         }
         .navigationTitle("联系人密钥")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-        .onAppear { username = initialUsername }
+        .onAppear {
+            username = initialUsername
+            if let existing = chat.peers.first(where: { $0.username == initialUsername }) { note = existing.note; mode = existing.mode }
+        }
         .onChange(of: username) { _ in inspection = nil }
     }
     private func lookup() {
@@ -208,6 +211,7 @@ struct ChatThreadView: View {
     @State private var lastRead: Int64 = 0
     @State private var readTask: Task<Void, Never>?
     @State private var viewport: CGSize = .zero
+    @State private var visibleFrames: [String: CGRect] = [:]
     @State private var olderBefore: String?
     @State private var loadingOlder = false
     @State private var showSettings = false
@@ -238,7 +242,8 @@ struct ChatThreadView: View {
                 }
                 .coordinateSpace(name: "chatViewport")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewport = geometry.size }.onChange(of: geometry.size) { viewport = $0 } })
-                .onPreferenceChange(ChatVisibleRows.self) { markVisible($0) }
+                .onPreferenceChange(ChatVisibleRows.self) { visibleFrames = $0; markVisible($0) }
+                .onChange(of: viewport) { _ in markVisible(visibleFrames) }
                 .onChange(of: rows.last?.id) { _ in if !loadingOlder { withAnimation { reader.scrollTo("bottom", anchor: .bottom) } } }
                 .onAppear { reader.scrollTo("bottom", anchor: .bottom) }
                 .refreshable { await chat.refresh() }
@@ -325,11 +330,11 @@ struct ChatThreadView: View {
         Task { defer { loadingOlder = false }; do { olderBefore = try await chat.loadOlder(conv, before: olderBefore) } catch { chat.error = error.localizedDescription } }
     }
     private func markVisible(_ frames: [String: CGRect]) {
+        readTask?.cancel()
         guard phase == .active, chat.connected, search.isEmpty else { return }
         let area = CGRect(origin: .zero, size: viewport)
         guard let latest = rows.filter({ $0.recipient == chat.subject && $0.text != nil && $0.problem == nil && $0.status == "incoming" && (frames[$0.id]?.intersection(area).height ?? 0) > 16 })
             .max(by: { (Int64($0.sequence) ?? 0) < (Int64($1.sequence) ?? 0) }), let seq = Int64(latest.sequence), seq > lastRead else { return }
-        readTask?.cancel()
         readTask = Task {
             do { try await Task.sleep(nanoseconds: 400_000_000); try Task.checkCancellation(); try await chat.markRead(latest); lastRead = seq }
             catch is CancellationError {} catch { chat.error = error.localizedDescription }

@@ -124,7 +124,9 @@ extension ChatController {
     private func uploadHistory(_ p: ChatPreparedPack) async throws {
         let c = try await connect(), base = "/chat/v2/history/" + (p.kind == "backup" ? "backups/" : "transfers/") + p.id
         let pack = try await json(base)
-        if pack["state"]?.stringValue == "ready" { return }
+        if pack["state"]?.stringValue == "ready" {
+            guard pack["manifest"]?.stringValue == p.manifest else { throw ChatFailure.invalid("已完成包的密封清单与本机不同，不能覆盖。") }; return
+        }
         let existing = try pack["chunks"].chatArray()
         for index in p.digests.indices {
             if let old = existing.first(where: { $0["chunk_index"]?.integer == index }), old["state"]?.stringValue == "ready", old["digest"]?.stringValue == p.digests[index] { continue }
@@ -159,7 +161,14 @@ extension ChatController {
     }
     func resumePrepared(_ pack: ChatPreparedPack) async throws {
         if pack.kind == "backup" { try await uploadBackup(pack) }
-        else { try requireHistory("device_history_transfer"); try await uploadHistory(pack) }
+        else {
+            try requireHistory("device_history_transfer")
+            let state = try await json("/chat/v2/history/transfers/\(pack.id)")
+            if state["state"]?.stringValue == "awaiting_approval", let pub = pack.sourcePublicKey, let proof = pack.approvalProof {
+                _ = try await json("/chat/v2/history/transfers/\(pack.id)/approve", method: "POST", body: .object(["expected_revision": state["revision"] ?? .string("1"), "expected_bytes": .number(Double(pack.bytes)), "chunk_count": .number(Double(pack.digests.count)), "source_public_key": .string(pub), "approval_proof": .string(proof)]))
+            }
+            try await uploadHistory(pack)
+        }
     }
     func restoreBackup(id: String, recoveryKey: String) async throws {
         try requireHistory("encrypted_backups"); guard UUID(uuidString: id) != nil else { throw ChatFailure.invalid("恢复包 ID 无效。") }
@@ -196,7 +205,8 @@ extension ChatController {
         let archive = try JSONDecoder().decode(ChatHistoryArchive.self, from: plain)
         guard archive.format == "nu-chat-records/1", archive.owner == c.subject, archive.relay == c.transport.relay.absoluteString else { throw ChatFailure.invalid("恢复历史属于其他账号或中继。") }
         for m in archive.messages {
-            guard UUID(uuidString: m.id) != nil, UUID(uuidString: m.conversationID) != nil, (m.sender == c.subject || m.recipient == c.subject), Int64(m.sequence) != nil else { throw ChatFailure.invalid("恢复记录身份或顺序号错误。") }
+            guard UUID(uuidString: m.id) != nil, UUID(uuidString: m.conversationID) != nil, (m.sender == c.subject || m.recipient == c.subject),
+                  let sequence = Int64(m.sequence), sequence >= 0, m.peerSubject == (m.sender == c.subject ? m.recipient : m.sender), (m.text?.utf8.count ?? 0) <= 16384 else { throw ChatFailure.invalid("恢复记录身份或顺序号错误。") }
         }
         var ring = c.ring
         for imported in archive.privateKeys {
@@ -209,10 +219,12 @@ extension ChatController {
             if let existing = (ring.keys + ring.archiveKeys).first(where: { $0.keyID == imported.keyID }) { guard existing.privateData == imported.privateData else { throw ChatFailure.invalid("恢复私钥与本机冲突。") } }
             else { ring.archiveKeys.append(imported) }
         }
+        try await localWrite(c) {
         let filters = try await historyFilters(); try current(c)
         try await c.store.mergeRestored(archive.messages, filters: filters.1)
         let latest = try await historyFilters(); try current(c)
         try await c.store.applyFilters(latest.1)
+        try current(c)
         try ChatKeyVault(namespace: c.namespace).save(ring)
         if var live = connection, live.ticket == c.ticket { live.ring = ring; connection = live }
         for peer in archive.peers where !peers.contains(where: { $0.subject == peer.subject }) {
@@ -223,6 +235,7 @@ extension ChatController {
             try await c.store.remove(kind: "transferTarget", id: id)
         }
         try current(c); messages = try await c.store.all(ChatMessage.self, kind: "message")
+        }
         // No send, sync cursor reset, unread increment, or message receipt here.
     }
 }
