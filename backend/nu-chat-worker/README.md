@@ -2,7 +2,7 @@
 
 2026-10-19 部署状态：[核心已部署到nu-pe-chat.cc.cd，R2待开通](../../docs/CHAT_DEPLOYMENT_2026-10-19.md)。工程位于 `/root/nu-chat/backend/nu-chat-worker`，旧Node服务文件保持不变；生产使用 `wrangler.production.jsonc`，下方 `wrangler.jsonc` 仍是通用模板。未做真实账号/跨端/Bark真机联调。
 
-源于用户提供的 `nu-chat-worker.7z`，修正其 D1 代码与 KV 配置不一致的问题。保留经过加固的安卓 `/chat/*`，新增独立 `/chat/v2/*`。没有真实账号或 Bark 凭据进入测试，没有修改外部安卓仓库或 iOS Swift 代码。
+源于用户提供的 `nu-chat-worker.7z`，修正其 D1 代码与 KV 配置不一致的问题。保留经过加固的安卓 `/chat/*`，新增独立 `/chat/v2/*`。没有真实账号或 Bark 凭据进入测试，没有修改外部安卓仓库；本项目后续已加入[iOS 2.3.0客户端](../../docs/IOS_CHAT.md)。
 
 契约：[V2 基础](../../docs/api/CHAT_V2_PROPOSAL.md)、[完整扩展接口](../../docs/api/CHAT_V2_EXTENSIONS.md)、[安卓互通](../../docs/api/ANDROID_INTEROP.md)。
 
@@ -35,7 +35,7 @@ WRANGLER_LOG_PATH=/tmp/nu-chat-wrangler.log WRANGLER_SEND_METRICS=false npm run 
 - V2 会话 1 小时，服务端仅存 token 哈希；主站 token 仅认证时校验、不存库。旧安卓每次仍携主站 Bearer，这是旧协议的信任成本。HTTPS only，重定向不转发凭据。
 - 前端持有私钥、随机 32 字节恢复密钥和迁移二维码秘密；服务器只保存公钥、密文、加密 Bark key 与最少关联元数据。恢复密钥不是主站密码，也不是 API 请求字段。
 - 原生新消息为每个活跃设备提供独立 envelope；旧协议消息只投递兼容主设备。新增设备必须明确显示历史缺口，用可信设备或手动备份补齐，不能显示“云历史完整”。
-- 客户端需实现双协议解密与协议选择，才能与旧安卓互聊。仅部署后端不会让当前尚未接入聊天的 iOS App 获得此能力。旧安卓自身 HTTP 回退、单密钥和本地缓存缺陷不能靠后端彻底修复。
+- iOS 2.3.0已实现双协议解密、协议选择与显式兼容主设备登记，需安装新IPA并完成真实账号跨端验收；仅更新后端不改变旧IPA。旧安卓自身 HTTP 回退、单密钥和本地缓存缺陷不能靠后端彻底修复。
 - Bark 仅通用提醒，不承载正文/账号/密文；被 Bark 接受不证明手机已显示，更不证明已读。超时重试可能重复通知，解绑无法撤回在途请求。
 - 观察性默认关闭；不要在平台访问日志、错误追踪或代理中记录 Authorization、请求体、完整响应、私钥或 Bark key。默认错误只含随机 request ID 与稳定错误码。
 - 当前未实现：群聊、附件、举报、好友关系、自动云备份、主站签发的最小权限 OAuth、账号注销接口、任意自建 Bark。上线前需容量/成本评估、身份服务约定、恢复演练和安卓/iOS/Bark 真机联调。

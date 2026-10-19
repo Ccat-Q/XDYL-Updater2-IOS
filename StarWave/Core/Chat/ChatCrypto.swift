@@ -63,12 +63,14 @@ enum ChatCrypto {
     }
     static func encrypt(_ text: String, key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: Data? = nil) throws -> (String, String) {
         try ChatValidation.plaintext(text)
+        guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
         let associated = try aad(metadata)
         let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(SHA256.hash(data: associated)), sharedInfo: Data("nu-chat-v2".utf8), outputByteCount: 32)
         let sealed = try AES.GCM.seal(Data(text.utf8), using: derived, nonce: try nonce.map { try AES.GCM.Nonce(data: $0) }, authenticating: associated)
         return (Data(sealed.nonce).base64EncodedString(), (sealed.ciphertext + sealed.tag).base64EncodedString())
     }
     static func decrypt(key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: String, ciphertext: String) throws -> String {
+        guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
         let associated = try aad(metadata)
         let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(SHA256.hash(data: associated)), sharedInfo: Data("nu-chat-v2".utf8), outputByteCount: 32)
         let bytes = try decoded(ciphertext, maximum: 16400), iv = try decoded(nonce, maximum: 12)

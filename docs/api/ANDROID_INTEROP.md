@@ -1,6 +1,6 @@
 # 旧安卓与 V2 新前端互通
 
-2026-10-19，**本地实现并测试；部署状态见[生产记录](../CHAT_DEPLOYMENT_2026-10-19.md)；未APK真机联调，iOS聊天前端尚未实现**。兼容层已随核心后端上线，不代表现有iOS已能互聊。
+2026-10-19，**本地实现并测试；部署状态见[生产记录](../CHAT_DEPLOYMENT_2026-10-19.md)；未APK真机联调**。兼容层已随核心后端上线；iOS 2.3.0 已实现双协议文字私聊，固定向量和构建验收见[IOS_CHAT.md](../IOS_CHAT.md)，不等同真实安卓与iOS已完成互聊验收。
 
 兼容目标固定为 [`UNSA-studio/xdyl@36d3a8c61ee2ffce3c3fe184356cc4125a119fcd`](https://github.com/UNSA-studio/xdyl/tree/36d3a8c61ee2ffce3c3fe184356cc4125a119fcd)，不是泛指任何历史 APK。该版本 [ChatApi.kt](https://github.com/UNSA-studio/xdyl/blob/36d3a8c61ee2ffce3c3fe184356cc4125a119fcd/app/src/main/java/www/xdyl/hygge/com/ChatApi.kt) 已在 GET/POST 携 Bearer、使用数值 seq cursor；[ChatCrypto.kt](https://github.com/UNSA-studio/xdyl/blob/36d3a8c61ee2ffce3c3fe184356cc4125a119fcd/app/src/main/java/www/xdyl/hygge/com/ChatCrypto.kt) 仍为单公钥 `nu-chat-v1`。早期 fe877 的缺陷保留在[历史证据](CHAT_V1.md)，不篡改成当前行为。
 

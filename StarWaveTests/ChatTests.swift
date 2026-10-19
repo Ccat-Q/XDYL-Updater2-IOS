@@ -41,6 +41,10 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(try ChatCrypto.decryptLegacy(v1, key: receiver, remote: aSPKI), text)
         fields["recipient_subject"] = "account:attacker"
         XCTAssertThrowsError(try ChatCrypto.decrypt(key: receiver, remote: aSPKI, metadata: .chatObject(fields), nonce: encrypted.0, ciphertext: encrypted.1))
+        fields["recipient_subject"] = "account:2"
+        fields["algorithm"] = algorithm == "X25519" ? "P256" : "X25519"
+        XCTAssertThrowsError(try ChatCrypto.encrypt(text, key: sender, remote: bSPKI, metadata: .chatObject(fields), nonce: nonce))
+        XCTAssertThrowsError(try ChatCrypto.decrypt(key: receiver, remote: aSPKI, metadata: .chatObject(fields), nonce: encrypted.0, ciphertext: encrypted.1))
     }
     func testEncryptedStorePageAndCursorRollbackAndReceiptScopes() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

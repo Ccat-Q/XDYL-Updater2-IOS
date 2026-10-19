@@ -57,10 +57,12 @@ wrangler deploy --config wrangler.production.jsonc
 
 ## 当前明确缺口
 
-后续iOS实现获用户授权后，已补充只读peer_username、sender_username/recipient_username和对应版本sender_public_key并重新部署。42项本地后端测试通过，其中包含“先发送→换钥→首次补拉→用原版本公钥解密”的回归；不改请求或schema，不重新生成秘密，不写聊天内容。iOS客户端代码现已加入，编译/测试结果另见[IOS_CHAT.md](IOS_CHAT.md)，以下iOS“未实施”是首次部署时的历史状态，不是后续客户端代码现状。
+后续iOS实现获用户授权后，已补充只读peer_username、sender_username/recipient_username和对应版本sender_public_key并重新部署。42项本地后端测试通过，其中包含“先发送→换钥→首次补拉→用原版本公钥解密”的回归；不改请求或schema，不重新生成秘密，不写聊天内容。iOS客户端代码现已加入，编译/测试结果另见[IOS_CHAT.md](IOS_CHAT.md)。
+
+23:24 UTC 对版本 `3e856dce-6fa7-4a7d-bb3b-a6944a9375d2` 再次执行上述匿名、认证失败、OPTIONS、绑定及Cron核对，全部通过；聚合计数仍为旧users=1、messages=0、reads=0、v2_accounts=0，schema=4、已应用migration=4。没有导出生产数据或执行真实账号写入。
 
 - Cloudflare账号R2列表接口返回10042“Please enable R2 through the Cloudflare Dashboard”。**未开通账单、未创建bucket、没有R2绑定。** 因此能力列表正确不含encrypted_backups/device_history_transfer；对应存储功能不可用，不能假装已部署。后续需用户先开通R2并补齐Wrangler授权，再创建私有bucket、添加生产绑定后重新部署。
-- iOS聊天页面/持钥存储/双协议接入尚未实施；仅后端上线不会自动给当前IPA增加互聊能力。
+- iOS 2.3.0已加入聊天页面、持钥存储、双协议、隐私/设备/提醒及恢复界面，需安装新IPA；真实账号、安卓与iOS互聊及界面真机验收尚未完成。
 - 旧安卓兼容版本和单主设备限制见[安卓互通](api/ANDROID_INTEROP.md)。导入的无稳定身份链接历史不会按当前用户名猜归属；公钥所有者须认证登记。
 - Bark API已开放但尚无用户绑定，没有真机推送验证。主站稳定ID、跨端收发、历史恢复和Bark锁屏/终止状态仍需后续验收。
 

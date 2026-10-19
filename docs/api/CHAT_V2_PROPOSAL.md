@@ -1,6 +1,6 @@
 # 私聊 V2 基础契约（本地实现）
 
-日期：2026-10-19。**状态：LOCAL IMPLEMENTED / 本地实现；部署状态见[生产记录](../CHAT_DEPLOYMENT_2026-10-19.md)；未真机联调。** 用户批准后已在 [backend/nu-chat-worker](../../backend/nu-chat-worker/README.md) 实现并本地验证，核心后端现已上线，R2功能未启用。文件名保留历史链接；这不是主站官方API，也不是当前iOS功能。完整新增功能见 [V2扩展](CHAT_V2_EXTENSIONS.md)，旧安卓互通见 [ANDROID_INTEROP.md](ANDROID_INTEROP.md)。
+日期：2026-10-19。**状态：LOCAL IMPLEMENTED / 本地实现；部署状态见[生产记录](../CHAT_DEPLOYMENT_2026-10-19.md)；未真机联调。** 用户批准后已在 [backend/nu-chat-worker](../../backend/nu-chat-worker/README.md) 实现并本地验证，核心后端现已上线，R2功能未启用。文件名保留历史链接；这不是主站官方API。iOS 2.3.0 客户端已接入，实现与验收状态见[IOS_CHAT.md](../IOS_CHAT.md)。完整新增功能见 [V2扩展](CHAT_V2_EXTENSIONS.md)，旧安卓互通见 [ANDROID_INTEROP.md](ANDROID_INTEROP.md)。
 
 前置事实见 [V1 源码契约](CHAT_V1.md)，实施门槛见[整改方案](../CHAT_SERVER_REMEDIATION.md)。JSON 示例为合成数据；`<...>`、示例游标及密码学材料均不可直接用于联调。
 
