@@ -9,7 +9,7 @@
 | 域名 | `https://nu-pe-chat.cc.cd`，保留既有 Custom Domain |
 | Worker | `nu-chat`，更新原实例，没有创建同名替代服务 |
 | 当前版本 | `3e856dce-6fa7-4a7d-bb3b-a6944a9375d2`（iOS只读元数据补齐）；首发V2为`34d2826d-f7af-4c52-bf84-3b670183d511` |
-| 版本标签 | `v2-20261019` |
+| 版本标签 | 当前`ios-chat-metadata`，首发V2为`v2-20261019` |
 | D1 | 原 `nu-chat-db`，ID `fbda1269-6747-46f9-93f0-828bb15dc14a` |
 | schema | 四项migration已应用，v2_schema=4 |
 | Cron | `* * * * *`，每分钟维护outbox/过期事件；无R2绑定则跳过对象清理 |
