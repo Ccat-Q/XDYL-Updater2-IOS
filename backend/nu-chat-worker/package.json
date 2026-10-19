@@ -1,0 +1,13 @@
+{
+  "name": "nu-chat-worker",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0" },
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.js",
+    "dev": "wrangler dev --local",
+    "check": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": { "wrangler": "4.151.2", "miniflare": "5.20261019.0-beta", "esbuild": "0.28.2" }
+}

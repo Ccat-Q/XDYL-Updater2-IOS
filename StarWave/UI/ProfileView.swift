@@ -113,6 +113,7 @@ private struct SettingsView: View {
                 NavigationLink("查看新手引导") { GettingStartedView() }
                 Button("复制游戏地址") { UIPasteboard.general.string = "mc.lanternwaves.fun:25565" }
             }
+            Section("私聊") { NavigationLink("私聊、设备与隐私设置") { ChatSettingsView() } }
             Section("下载") {
                 Toggle("允许蜂窝网络下载", isOn: $allowCellularDownloads)
                 Text("后台下载会在系统允许的时间内继续；蜂窝网络设置在下次启动后生效。")

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nu-chat",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "nu-chat",
+    "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+    "migrations_dir": "migrations"
+  }],
+  "triggers": { "crons": ["* * * * *"] },
+  "r2_buckets": [{ "binding": "HISTORY_BUCKET", "bucket_name": "nu-chat-history" }],
+  "vars": { "BARK_ENABLED": "false" },
+  // Configure CURSOR_SECRET and BARK_ENCRYPTION_KEY with wrangler secret put.
+  // No production route is attached automatically. Review README before deployment.
+  "observability": { "enabled": false }
+}

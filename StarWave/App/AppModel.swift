@@ -6,6 +6,7 @@ final class AppModel: ObservableObject {
     let sessionStore: SessionStore
     let api: APIClient
     let downloads: DownloadManager
+    let chat: ChatController
 
     @Published var profile: UserProfile?
     @Published var unreadCount = 0
@@ -22,6 +23,7 @@ final class AppModel: ObservableObject {
         sessionStore = store
         observedGeneration = store.generation
         self.api = api ?? APIClient(sessionStore: store)
+        chat = ChatController(sessionStore: store, mainAPI: self.api)
         downloads = .shared
         sessionObservation = store.$accessToken.dropFirst().sink { [weak self] token in
             guard let self else { return }
@@ -29,6 +31,7 @@ final class AppModel: ObservableObject {
             if self.observedGeneration != self.sessionStore.generation {
                 self.observedGeneration = self.sessionStore.generation
                 self.profile = nil; self.unreadCount = 0
+                self.chat.resetIdentity()
                 self.authenticationCompletionTask?.cancel()
                 if let token, !token.isEmpty {
                     // Session-scoped completion survives the login sheet closing,
@@ -36,7 +39,7 @@ final class AppModel: ObservableObject {
                     self.authenticationCompletionTask = Task { [weak self] in await self?.finishAuthentication() }
                 }
             }
-            if token == nil { self.profile = nil; self.unreadCount = 0 }
+            if token == nil { self.profile = nil; self.unreadCount = 0; self.chat.resetIdentity() }
         }
     }
 
@@ -74,6 +77,7 @@ final class AppModel: ObservableObject {
             let value = try await api.profile()
             guard generation == sessionStore.generation, revision == profileRevision, !Task.isCancelled else { return }
             profile = value
+            chat.identify(value)
         } catch is CancellationError {} catch {
             guard generation == sessionStore.generation, revision == profileRevision, !Task.isCancelled else { return }
             errorMessage = error.localizedDescription

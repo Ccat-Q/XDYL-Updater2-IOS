@@ -22,6 +22,7 @@ struct StarWaveApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
+                .environmentObject(model.chat)
                 .task { await model.bootstrap() }
                 .task(id: "\(scenePhase == .active)-\(model.isAuthenticated)") {
                     if scenePhase == .active && model.isAuthenticated { await model.monitorNotifications() }

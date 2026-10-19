@@ -87,6 +87,7 @@ struct AuthTokens: Equatable {
 }
 
 struct UserProfile: Equatable {
+    var stableID: String?
     var username: String
     var nickname: String
     var email: String
@@ -105,6 +106,10 @@ struct UserProfile: Equatable {
 
     init(json: JSONValue) {
         let source = json["data"] ?? json["profile"] ?? json
+        let idValue = source["id"] ?? source["user_id"]
+        if case .string(let id)? = idValue, id != "0", id.range(of: #"^[A-Za-z0-9_-]{1,128}$"#, options: .regularExpression) != nil { stableID = id }
+        else if case .number(let number)? = idValue, number.isFinite, number > 0, number <= 9007199254740991, number.rounded() == number { stableID = String(Int64(number)) }
+        else { stableID = nil }
         username = source["username"]?.stringValue ?? "用户"
         nickname = source["nickname"]?.stringValue ?? username
         email = source["email"]?.stringValue ?? ""

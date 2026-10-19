@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var chat: ChatController
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         Group {
@@ -12,11 +14,16 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut, value: model.isAuthenticated)
+        .task(id: "\(phase == .active)-\(chat.lifecycleID)") {
+            if phase == .active && model.isAuthenticated && chat.canConnect { await chat.monitor() }
+        }
+        .onChange(of: phase) { if $0 != .active { chat.suspend() } }
     }
 }
 
 private struct MainTabView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var chat: ChatController
     @AppStorage("guide.mobile.v1.acknowledged") private var guideAcknowledged = false
     @State private var showingGuide = false
 
@@ -26,6 +33,7 @@ private struct MainTabView: View {
                 .tabItem { Label("首页", systemImage: "house") }
             NavigationStack { CommunityView() }
                 .tabItem { Label("社区", systemImage: "bubble.left.and.bubble.right") }
+                .badge(chat.unreadCount)
             NavigationStack { DownloadsView() }
                 .tabItem { Label("资源", systemImage: "arrow.down.circle") }
             NavigationStack { ServicesView() }

@@ -1,7 +1,7 @@
 import SwiftUI
 import PhotosUI
 
-struct CommunityView: View {
+struct ForumFeedView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var feed = CommunityFeed()
     @State private var showingCompose = false

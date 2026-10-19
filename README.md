@@ -38,3 +38,5 @@ xcodebuild build-for-testing \
 旧服务的 `api.lanternwaves.fun:8080` 和 `:5551` 仅支持 HTTP。为保持接口不变，应用对 `api.lanternwaves.fun` 配置了 ATS 例外，并在代码中把明文请求限制到上述端口。访问令牌只存放在 Keychain；但服务端明文传输风险无法由客户端消除。
 
 完整已知接口、请求/返回体、用途与鉴权见 [API 接口手册](docs/api/README.md)；历史兼容决策见 [API compatibility](docs/api/API_COMPATIBILITY.md)。
+
+2.3.0已加入[iOS文字私聊客户端](docs/IOS_CHAT.md)，包括双协议、加密本地历史、设备/隐私/提醒及恢复界面，等待本轮Actions与真机验收。独立[聊天后端](backend/nu-chat-worker/README.md)核心已[部署到nu-pe-chat.cc.cd](docs/CHAT_DEPLOYMENT_2026-10-19.md)；R2尚未开通，云备份/设备迁移暂不可用。实现不等于真机收发已验证，详见[验收边界](docs/CHAT_SERVER_REMEDIATION.md)。
