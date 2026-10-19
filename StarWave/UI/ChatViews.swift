@@ -106,6 +106,7 @@ struct ChatConsentView: View {
     @State private var confirming = false
     var body: some View {
         Form {
+            if let error = chat.error { Section { Text(error).font(.footnote).foregroundStyle(.orange) } }
             Section("文字私聊") {
                 Text("私聊由独立中继提供，不属于主站身份服务。默认不联网，也不发送主站令牌。")
                 TextField("HTTPS 中继", text: $relay).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()

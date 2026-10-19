@@ -71,6 +71,7 @@ private struct ChatPrivacyView: View {
     @State private var saving = false
     var body: some View {
         Form {
+            ChatStatusSection()
             Section("谁可以发给我") {
                 Picker("接收权限", selection: $policy) {
                     Text("所有人").tag("everyone"); Text("我曾主动联系的人").tag("existing"); Text("不接收新消息").tag("none")
@@ -116,6 +117,7 @@ private struct ChatDevicesView: View {
     @State private var confirmLegacy = false
     var body: some View {
         List {
+            ChatStatusSection()
             Section("设备") {
                 ForEach(Array(devices.enumerated()), id: \.offset) { _, d in deviceRow(d) }
                 Button("刷新设备") { Task { await load() } }
@@ -195,6 +197,7 @@ private struct ChatBlocksView: View {
     @State private var blocked: [JSONValue] = []
     var body: some View {
         List {
+            ChatStatusSection()
             if blocked.isEmpty { Text("暂无屏蔽账号").foregroundStyle(.secondary) }
             ForEach(Array(blocked.enumerated()), id: \.offset) { _, b in
                 let subject = b["subject"]?.stringValue ?? ""
@@ -234,6 +237,7 @@ struct ChatNotificationSettingsView: View {
     }
     var body: some View {
         Form {
+            ChatStatusSection()
             Section {
                 Picker("配置范围", selection: $scope) { Text("账号").tag("account"); Text("当前设备").tag("device") }
                 inheritancePicker("提醒", value: $enabled); inheritancePicker("静音", value: $muted)
@@ -309,6 +313,7 @@ private struct ChatBarkView: View {
     private var base: String { "/chat/v2/devices/\(chat.currentDeviceID)/bark" }
     var body: some View {
         Form {
+            ChatStatusSection()
             Section("官方 Bark") {
                 Text("https://api.day.app")
                 Text("请先安装 Bark 并取得设备 Key。只支持官方服务器；通知内容不包含正文、发送人或账号。")
