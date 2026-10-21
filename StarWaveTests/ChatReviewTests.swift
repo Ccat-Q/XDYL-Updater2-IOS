@@ -357,15 +357,16 @@ final class ChatReviewTests: XCTestCase {
     @MainActor func testComposerAppearanceAttachments() async throws {
         for (name, dark, reduce, large) in [("light", false, false, false), ("dark", true, false, false), ("opaque", false, true, false), ("accessibility", false, false, true)] {
             let composer = ChatComposer(text: .constant("测试多行输入\n原生 Liquid Glass"), sending: false, connected: true, protocolTitle: "旧安卓兼容", send: {})
+                .padding(.vertical, 20).background(Color(uiColor: .systemGroupedBackground))
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .environment(\.appPrefersOpaqueChatControls, reduce)
                 .environment(\.dynamicTypeSize, large ? .accessibility3 : .large)
-                .padding(.vertical, 20).background(Color(uiColor: .systemGroupedBackground))
             let host = UIHostingController(rootView: composer)
             let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
             let previous = scene.windows.first(where: \.isKeyWindow)
             let window = UIWindow(windowScene: scene)
             window.frame = CGRect(x: 0, y: 0, width: 320, height: large ? 440 : 220)
+            window.overrideUserInterfaceStyle = dark ? .dark : .light
             window.rootViewController = host; window.windowLevel = .alert + 1; window.makeKeyAndVisible()
             host.view.frame = window.bounds; host.view.setNeedsLayout(); host.view.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 100_000_000)
