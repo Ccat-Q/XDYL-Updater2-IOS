@@ -335,7 +335,7 @@ final class ChatReviewTests: XCTestCase {
         for (name, dark, reduce, large) in [("light", false, false, false), ("dark", true, false, false), ("opaque", false, true, false), ("accessibility", false, false, true)] {
             let composer = ChatComposer(text: .constant("测试多行输入\n原生 Liquid Glass"), sending: false, connected: true, protocolTitle: "旧安卓兼容", send: {})
                 .environment(\.colorScheme, dark ? .dark : .light)
-                .environment(\.accessibilityReduceTransparency, reduce)
+                .environment(\.appPrefersOpaqueChatControls, reduce)
                 .environment(\.dynamicTypeSize, large ? .accessibility3 : .large)
                 .padding(.vertical, 20).background(Color(uiColor: .systemGroupedBackground))
             let host = UIHostingController(rootView: composer)

@@ -76,20 +76,21 @@ struct AppGlassControls<Content: View>: View {
 
 private struct ChatControlSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.appPrefersOpaqueChatControls) private var prefersOpaque
     @Environment(\.colorSchemeContrast) private var contrast
     let cornerRadius: CGFloat
     let prominent: Bool
     func body(content: Content) -> some View {
         surface(content)
             .overlay {
-                if contrast == .increased || reduceTransparency {
+                if contrast == .increased || reduceTransparency || prefersOpaque {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.35), lineWidth: 1).allowsHitTesting(false)
                 }
             }
     }
     @ViewBuilder private func surface(_ content: Content) -> some View {
-        if reduceTransparency {
+        if reduceTransparency || prefersOpaque {
             content.background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         } else {
 #if compiler(>=6.2)
@@ -102,5 +103,17 @@ private struct ChatControlSurface: ViewModifier {
             content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
 #endif
         }
+    }
+}
+
+private struct OpaqueChatControlsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+extension EnvironmentValues {
+    /// A scoped stricter-contrast preference, also used by deterministic
+    /// previews. It can never override the system's reduced-transparency choice.
+    var appPrefersOpaqueChatControls: Bool {
+        get { self[OpaqueChatControlsKey.self] }
+        set { self[OpaqueChatControlsKey.self] = newValue }
     }
 }
