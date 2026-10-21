@@ -220,7 +220,7 @@ extension ChatController {
         // Stage in memory until BOTH reads succeed. No partial history can be
         // left behind if the final filter fetch fails.
         let latest = try await historyFilters(); try current(c)
-        let vault = ChatKeyVault(namespace: c.namespace)
+        let vault = keyVaultFactory(c.namespace)
         guard let currentRing = try vault.load(), currentRing.deviceID == c.ring.deviceID else { throw CancellationError() }
         let ring = try currentRing.mergingHistory(archive.privateKeys)
         try vault.save(ring)

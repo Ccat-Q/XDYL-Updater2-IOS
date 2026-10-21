@@ -48,18 +48,21 @@ private struct ChatReviewFixture {
     let session: SessionStore
     let chat: ChatController
     let c: ChatConnection
+    let vault: ReviewKeyStore
     init() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("chat-review-" + UUID().uuidString, isDirectory: true)
         session = SessionStore(keychainService: "chat-review-" + UUID().uuidString)
         session.save(AuthTokens(json: .chatObject(["access_token": "synthetic", "username": "alice"]))!)
+        let keys = ReviewKeyStore(); vault = keys
         let config = reviewConfiguration()
         let api = APIClient(sessionStore: session, session: URLSession(configuration: config))
         chat = ChatController(sessionStore: session, mainAPI: api, defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            keyVaultFactory: { _ in keys },
             transportFactory: { ChatTransport(relay: $0, configuration: reviewConfiguration()) })
         try chat.changeRelay("https://" + UUID().uuidString.lowercased() + ".test", profile: UserProfile(json: .object(["id": .number(1), "username": .string("alice")])))
         chat.setEnabled(true); chat.foreground = true
         var ring = try ChatKeyRing.create(); ring.revision = "1"
-        try ChatKeyVault(namespace: chat.namespace!).save(ring)
+        try keys.save(ring)
         let store = try ChatLocalStore(namespace: chat.namespace!, key: ring.storeKey, directory: directory)
         let relay = try ChatValidation.relay(chat.relayText)
         c = ChatConnection(ticket: chat.ticket, namespace: chat.namespace!, subject: "account:1", username: "alice", token: "chat-synthetic", expiresAt: Int64.max,
@@ -69,7 +72,6 @@ private struct ChatReviewFixture {
     }
     func clean() {
         chat.suspend(); session.clear(); ChatReviewProtocol.handler = nil
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: ChatKeyVault(namespace: c.namespace).service] as CFDictionary)
         try? FileManager.default.removeItem(at: directory)
     }
     func message(sequence: String = "1", incoming: Bool = false) -> ChatMessage {
@@ -91,6 +93,18 @@ private struct ChatReviewFixture {
         let sealed = try ChatHistoryCrypto.seal(ChatCrypto.canonical(manifest), key: key, aad: ChatHistoryCrypto.aad(owner: c.subject, pack: id, kind: "backup", index: nil))
         let wrapper = JSONValue.chatObject(["format": "nu-chat-history/1", "salt": salt.base64EncodedString(), "sealed_manifest": sealed.base64EncodedString()])
         return (.chatObject(["state": "ready", "revision": "1", "manifest": String(data: try ChatCrypto.canonical(wrapper), encoding: .utf8)!]), chunk)
+    }
+}
+
+/// Logic tests do not silently relax Keychain access control to work around an
+/// unsigned simulator host. Production still uses the strict OS-backed vault.
+private final class ReviewKeyStore: ChatKeyStoring {
+    var ring: ChatKeyRing?
+    var failSave = false
+    func load() throws -> ChatKeyRing? { ring }
+    func save(_ value: ChatKeyRing) throws {
+        if failSave { throw ChatFailure.invalid("Synthetic secure-store write failure") }
+        ring = value
     }
 }
 
@@ -275,7 +289,7 @@ final class ChatReviewTests: XCTestCase {
         async let one: Void = f.chat.restoreBackup(id: aID, recoveryKey: root)
         async let two: Void = f.chat.restoreBackup(id: bID, recoveryKey: root)
         _ = try await (one, two)
-        let ring = try XCTUnwrap(ChatKeyVault(namespace: f.c.namespace).load())
+        let ring = try XCTUnwrap(f.vault.load())
         XCTAssertEqual(try ring.key(a.keyID).publicKey, a.publicKey); XCTAssertEqual(try ring.key(b.keyID).publicKey, b.publicKey)
         XCTAssertEqual(ring.deviceID, f.c.ring.deviceID); XCTAssertEqual(Set(ring.keys.map(\.keyID)), Set(f.c.ring.keys.map(\.keyID)))
     }
@@ -331,6 +345,15 @@ final class ChatReviewTests: XCTestCase {
         XCTAssertNil(ChatVisibleRead.latest([unreadable], frames: frames, viewport: viewport, owner: f.c.subject, after: 0, enabled: true))
     }
 
+    @MainActor func testSecureStoreFailureStopsBeforeRegistrationOrCredentialExchange() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        f.chat.connection = nil; f.chat.localStore = nil; f.vault.failSave = true
+        var requests = 0
+        ChatReviewProtocol.handler = { _, stub in requests += 1; stub.respond() }
+        do { _ = try await f.chat.connect(); XCTFail("Secure-store failure must stop authentication") } catch {}
+        XCTAssertEqual(requests, 0); XCTAssertNil(f.chat.connection)
+    }
+
     @MainActor func testComposerAppearanceAttachments() async throws {
         for (name, dark, reduce, large) in [("light", false, false, false), ("dark", true, false, false), ("opaque", false, true, false), ("accessibility", false, false, true)] {
             let composer = ChatComposer(text: .constant("测试多行输入\n原生 Liquid Glass"), sending: false, connected: true, protocolTitle: "旧安卓兼容", send: {})
@@ -339,12 +362,19 @@ final class ChatReviewTests: XCTestCase {
                 .environment(\.dynamicTypeSize, large ? .accessibility3 : .large)
                 .padding(.vertical, 20).background(Color(uiColor: .systemGroupedBackground))
             let host = UIHostingController(rootView: composer)
-            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: large ? 440 : 220))
-            window.rootViewController = host; window.isHidden = false; host.view.frame = window.bounds; host.view.layoutIfNeeded()
+            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+            let previous = scene.windows.first(where: \.isKeyWindow)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: 320, height: large ? 440 : 220)
+            window.rootViewController = host; window.windowLevel = .alert + 1; window.makeKeyAndVisible()
+            host.view.frame = window.bounds; host.view.setNeedsLayout(); host.view.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 100_000_000)
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            var rendered = false
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in rendered = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
             let attachment = XCTAttachment(image: image); attachment.name = "chat-composer-" + name; attachment.lifetime = .keepAlways
-            add(attachment); XCTAssertNotNil(image.pngData()); window.isHidden = true
+            add(attachment); XCTAssertTrue(rendered); XCTAssertNotNil(image.pngData())
+            if let pixels = image.cgImage?.dataProvider?.data { XCTAssertGreaterThan(Set(pixels as Data).count, 8, "Blank preview is not a visual regression result") }
+            window.isHidden = true; previous?.makeKey()
         }
     }
 }

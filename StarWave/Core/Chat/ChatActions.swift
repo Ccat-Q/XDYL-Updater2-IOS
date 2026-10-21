@@ -210,7 +210,7 @@ extension ChatController {
     func createNewDevice() async throws {
         guard let ns = namespace else { return }
         let stamp = ticket
-        let vault = ChatKeyVault(namespace: ns); var ring = try vault.load() ?? ChatKeyRing.create()
+        let vault = keyVaultFactory(ns); var ring = try vault.load() ?? ChatKeyRing.create()
         ring.archiveKeys += ring.keys; ring.keys = try ChatCrypto.newKeys(); ring.deviceID = UUID().uuidString.lowercased(); ring.revision = "0"
         let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
         try await store.remove(kind: "state", id: "cursor")

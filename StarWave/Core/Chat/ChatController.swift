@@ -45,12 +45,15 @@ final class ChatController: ObservableObject {
     private var monitorID = UUID()
     private var mainGeneration: UUID
     private let defaults: UserDefaults
+    let keyVaultFactory: (String) -> any ChatKeyStoring
     private let transportFactory: (URL) -> ChatTransport
     var changedPeers = Set<String>()
 
     init(sessionStore: SessionStore, mainAPI: APIClient, defaults: UserDefaults = .standard,
+         keyVaultFactory: @escaping (String) -> any ChatKeyStoring = { ChatKeyVault(namespace: $0) },
          transportFactory: @escaping (URL) -> ChatTransport = { ChatTransport(relay: $0) }) {
         self.sessionStore = sessionStore; self.mainAPI = mainAPI; self.defaults = defaults
+        self.keyVaultFactory = keyVaultFactory
         self.transportFactory = transportFactory
         mainGeneration = sessionStore.generation
         relayText = defaults.string(forKey: "chat.relay") ?? ChatValidation.defaultRelay
@@ -94,7 +97,7 @@ final class ChatController: ObservableObject {
     func localStorage() throws -> ChatLocalStore {
         guard let ns = namespace, enabled, mainGeneration == sessionStore.generation, sessionStore.isAuthenticated else { throw CancellationError() }
         if let localStore { return localStore }
-        let vault = ChatKeyVault(namespace: ns)
+        let vault = keyVaultFactory(ns)
         let ring = try vault.load() ?? ChatKeyRing.create()
         try vault.save(ring)
         let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
@@ -143,7 +146,7 @@ final class ChatController: ObservableObject {
             if let flight = self.syncTask { _ = try? await flight.value }
             try Task.checkCancellation()
             let relay = try ChatValidation.relay(self.relayText)
-            let vault = ChatKeyVault(namespace: ns)
+            let vault = self.keyVaultFactory(ns)
             var ring = try vault.load() ?? ChatKeyRing.create()
             try vault.save(ring) // Save before issuing public-key registration.
             let store = try self.localStorage()

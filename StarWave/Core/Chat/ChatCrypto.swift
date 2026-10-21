@@ -114,7 +114,12 @@ enum ChatCrypto {
     }
 }
 
-struct ChatKeyVault {
+protocol ChatKeyStoring {
+    func load() throws -> ChatKeyRing?
+    func save(_ ring: ChatKeyRing) throws
+}
+
+struct ChatKeyVault: ChatKeyStoring {
     let service: String
     init(namespace: String) { service = "com.ccatq.xdylupdater2.chat." + namespace }
     private var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "keyring"] }
