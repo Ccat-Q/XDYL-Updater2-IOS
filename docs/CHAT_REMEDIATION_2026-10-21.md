@@ -47,4 +47,13 @@ R2配置、真实安卓/iOS收发、Bark锁屏、备份恢复双设备与键盘/
 
 ## 构建与验证记录
 
-本轮本地检查和新增回归已加入；iOS16/26编译、模拟器XCTest及截图结果待本轮Actions执行后补记。上轮2.3.0的147项测试与IPA不是本轮2.3.1验收结果，见[历史实现记录](IOS_CHAT.md)。
+软件源码`425f9cf6abf4ebf955e5a0521091e2a88de4707f`的[Actions 39636031671](https://github.com/Ccat-Q/XDYL-Updater2-IOS/actions/runs/39636031671)完成以下验证：
+
+- Xcode26.6编译、iPhone17 Pro模拟器运行**160项XCTest，0失败**，其中13项为本轮ChatReviewTests；Release archive和IPA打包成功。
+- Xcode16.4兼容编译通过。生产客户端仍使用严格Keychain；未签名模拟器的逻辑回归采用注入式内存密钥存储，另验证安全存储失败时不得开始注册或交换凭据，不为测试放宽正式安全策略。
+- 本地文档检查通过：83个目录操作及4个额外操作、153个JSON示例；`git diff --check`通过。这些是离线检查，不验证线上接口。
+- IPA包内`com.ccatq.xdylupdater2`，版本**2.3.1（1）**，最低iOS16.0；ZIP完整性及附带SHA-256校验通过：`1b65e63d92861881373576f43e8dcfaf3b98a18238e82a60679316bc3265d083`。产物为`StarWave-resignable`，需用户自行签名，未发布正式Release。
+
+四张320点预览均已导出并人工打开，不再为空图。浅色、实色和无障碍大字体检查未见内容裁切；深色图暴露的是测试背景在环境修饰之外且窗口仍为浅色的问题，不能据此宣称深色视觉验收通过。`0d52ee1`仅修正测试环境与窗口外观，不修改正式软件；[后续Actions 39638050578](https://github.com/Ccat-Q/XDYL-Updater2-IOS/actions/runs/39638050578)正在重新验证，最终深色截图仍待复核。
+
+旧2.3.0的147项测试与IPA不是本轮验收结果，见[历史实现记录](IOS_CHAT.md)。本轮未改生产Worker及许可证；iOS来源判断另见[软件许可审计](IOS_SOURCE_LICENSE_AUDIT_2026-10-21.md)。

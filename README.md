@@ -39,4 +39,4 @@ xcodebuild build-for-testing \
 
 完整已知接口、请求/返回体、用途与鉴权见 [API 接口手册](docs/api/README.md)；历史兼容决策见 [API compatibility](docs/api/API_COMPATIBILITY.md)。
 
-2.3.0已加入[iOS文字私聊客户端](docs/IOS_CHAT.md)，历史Actions编译、147项XCTest与IPA归档已通过。2.3.1正在补充[审查修复和Liquid Glass输入栏](docs/CHAT_REMEDIATION_2026-10-21.md)，本轮验证单独记录，不复用旧构建结论。独立[聊天后端](backend/nu-chat-worker/README.md)核心已[部署到nu-pe-chat.cc.cd](docs/CHAT_DEPLOYMENT_2026-10-19.md)；R2尚未开通，云备份/设备迁移暂不可用。真实账号、安卓/iOS互聊及Bark真机提醒仍待验收，详见[验收边界](docs/CHAT_SERVER_REMEDIATION.md)。
+已加入[iOS文字私聊客户端](docs/IOS_CHAT.md)。2.3.1完成[审查修复和Liquid Glass输入栏](docs/CHAT_REMEDIATION_2026-10-21.md)，iOS16/26编译、160项XCTest与IPA归档通过；截图测试环境的后续修正及真机验收边界单独记录，不复用旧构建结论。独立[聊天后端](backend/nu-chat-worker/README.md)核心已[部署到nu-pe-chat.cc.cd](docs/CHAT_DEPLOYMENT_2026-10-19.md)；R2尚未开通，云备份/设备迁移暂不可用。真实账号、安卓/iOS互聊及Bark真机提醒仍待验收，详见[验收边界](docs/CHAT_SERVER_REMEDIATION.md)。
