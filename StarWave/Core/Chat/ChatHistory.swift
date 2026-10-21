@@ -118,8 +118,15 @@ extension ChatController {
     }
     func uploadBackup(_ prepared: ChatPreparedPack) async throws {
         try requireHistory("encrypted_backups"); guard prepared.kind == "backup" else { throw ChatFailure.invalid("恢复包类型不匹配。") }
+        let store = try localStorage()
+        guard try await store.get(Bool.self, kind: "backupKeySaved", id: prepared.id) == true else { throw ChatFailure.invalid("请先查看并明确确认已安全保存此备份的恢复密钥，再上传或续传。") }
         _ = try await json("/chat/v2/history/backups", method: "POST", body: .object(["pack_id": .string(prepared.id), "expected_bytes": .number(Double(prepared.bytes)), "chunk_count": .number(Double(prepared.digests.count)), "recovery_key_id": .string(prepared.recoveryKeyID)]))
         try await uploadHistory(prepared)
+    }
+    func confirmBackupKeySaved(_ id: String) async throws {
+        let store = try localStorage()
+        guard let pack = try await store.get(ChatPreparedPack.self, kind: "preparedHistory", id: id), pack.kind == "backup" else { throw ChatFailure.invalid("本机没有此备份的恢复密钥。") }
+        try await store.put(true, kind: "backupKeySaved", id: id)
     }
     private func uploadHistory(_ p: ChatPreparedPack) async throws {
         let c = try await connect(), base = "/chat/v2/history/" + (p.kind == "backup" ? "backups/" : "transfers/") + p.id
@@ -208,33 +215,26 @@ extension ChatController {
             guard UUID(uuidString: m.id) != nil, UUID(uuidString: m.conversationID) != nil, (m.sender == c.subject || m.recipient == c.subject),
                   let sequence = Int64(m.sequence), sequence >= 0, m.peerSubject == (m.sender == c.subject ? m.recipient : m.sender), (m.text?.utf8.count ?? 0) <= 16384 else { throw ChatFailure.invalid("恢复记录身份或顺序号错误。") }
         }
-        var ring = c.ring
-        for imported in archive.privateKeys {
-            guard UUID(uuidString: imported.keyID) != nil else { throw ChatFailure.invalid("恢复私钥身份无效。") }
-            let publicKey: String
-            if imported.algorithm == "X25519" { publicKey = (ChatCrypto.xPrefix + (try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: imported.privateData)).publicKey.rawRepresentation).base64EncodedString() }
-            else if imported.algorithm == "P256" { publicKey = (try P256.KeyAgreement.PrivateKey(rawRepresentation: imported.privateData)).publicKey.derRepresentation.base64EncodedString() }
-            else { throw ChatFailure.invalid("恢复私钥算法未知。") }
-            guard publicKey == imported.publicKey else { throw ChatFailure.invalid("恢复私钥与公钥不匹配。") }
-            if let existing = (ring.keys + ring.archiveKeys).first(where: { $0.keyID == imported.keyID }) { guard existing.privateData == imported.privateData else { throw ChatFailure.invalid("恢复私钥与本机冲突。") } }
-            else { ring.archiveKeys.append(imported) }
-        }
+        let filters = try await historyFilters()
         try await localWrite(c) {
-        let filters = try await historyFilters(); try current(c)
-        try await c.store.mergeRestored(archive.messages, filters: filters.1)
+        // Stage in memory until BOTH reads succeed. No partial history can be
+        // left behind if the final filter fetch fails.
         let latest = try await historyFilters(); try current(c)
-        try await c.store.applyFilters(latest.1)
+        let vault = ChatKeyVault(namespace: c.namespace)
+        guard let currentRing = try vault.load(), currentRing.deviceID == c.ring.deviceID else { throw CancellationError() }
+        let ring = try currentRing.mergingHistory(archive.privateKeys)
+        try vault.save(ring)
+        try await c.store.mergeRestored(archive.messages, filters: filters.1 + latest.1)
         try current(c)
-        try ChatKeyVault(namespace: c.namespace).save(ring)
         if var live = connection, live.ticket == c.ticket { live.ring = ring; connection = live }
         for peer in archive.peers where !peers.contains(where: { $0.subject == peer.subject }) {
             try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c); peers.append(peer)
         }
+        try current(c); messages = try await c.store.all(ChatMessage.self, kind: "message")
         if kind == "transfer" {
             _ = try await json(base + "/ack", method: "POST", body: .chatObject(["expected_revision": try pack.chatSequence("revision"), "filter_revision": latest.0]))
             try await c.store.remove(kind: "transferTarget", id: id)
         }
-        try current(c); messages = try await c.store.all(ChatMessage.self, kind: "message")
         }
         // No send, sync cursor reset, unread increment, or message receipt here.
     }

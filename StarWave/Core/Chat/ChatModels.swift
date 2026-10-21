@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum ChatFailure: LocalizedError, Equatable {
     case invalid(String)
@@ -38,7 +39,7 @@ enum ChatFailure: LocalizedError, Equatable {
 enum ChatProtocolMode: String, Codable, CaseIterable, Identifiable {
     case automatic, native, legacy
     var id: String { rawValue }
-    var title: String { switch self { case .automatic: return "自动选择"; case .native: return "新版 V2"; case .legacy: return "旧安卓兼容" } }
+    var title: String { switch self { case .automatic: return "自动（优先 V2）"; case .native: return "新版 V2"; case .legacy: return "旧安卓兼容" } }
 }
 
 struct ChatPeer: Codable, Hashable, Identifiable {
@@ -48,6 +49,9 @@ struct ChatPeer: Codable, Hashable, Identifiable {
     var mode: ChatProtocolMode = .automatic
     var fingerprint = ""
     var trustedKeys: [String: String] = [:]
+    // Older clients also pinned unverified keys extracted from message bodies.
+    // Those pins must be explicitly reverified before they can decrypt again.
+    var trustVersion: Int? = nil
     var id: String { subject }
     var title: String { note.isEmpty ? username : note }
 }
@@ -91,9 +95,19 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var status: String
     var raw: JSONValue?
     var peerSubject: String
+    var hasServerSequence: Bool { !id.hasPrefix("pending:") && UUID(uuidString: id) != nil && (Int64(sequence) ?? 0) > 0 && status != "pending" }
+    mutating func associateLegacySend(owner: String, deviceID: String) {
+        guard sender == owner, hasServerSequence, raw?["sender_device_id"]?.stringValue == deviceID,
+              raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1" else { return }
+        let prefix = "v2:" + deviceID + ":"
+        guard clientID.hasPrefix(prefix) else { return }
+        let suffix = String(clientID.dropFirst(prefix.count))
+        guard UUID(uuidString: suffix) != nil else { return }
+        clientID = suffix // raw retains the wire identity; V2 AAD is never changed.
+    }
     var date: Date { Date(timeIntervalSince1970: Double(acceptedAt) / 1000) }
     var stateTitle: String {
-        switch status { case "pending": return "待重试"; case "accepted": return "服务端已接受"; case "received": return "对方设备已接收"; case "read": return "对方已读"; case "recalled": return "消息已撤回"; case "hidden": return "消息不可用"; case "incoming": return ""; default: return "待同步" }
+        switch status { case "pending": return "待重试"; case "accepted_waiting_sync": return "服务端已接受 · 待同步"; case "accepted": return "服务端已接受"; case "received": return "对方设备已接收"; case "read": return "对方已读"; case "recalled": return "消息已撤回"; case "hidden": return "消息不可用"; case "incoming": return ""; default: return "待同步" }
     }
 }
 
@@ -103,6 +117,27 @@ struct ChatPendingSend: Codable, Identifiable {
     let path: String
     let body: JSONValue
     var message: ChatMessage
+    func isAccepted(by accepted: ChatMessage) -> Bool {
+        guard accepted.hasServerSequence, accepted.clientID == id, accepted.sender == message.sender,
+              accepted.recipient == message.recipient, accepted.peerSubject == peerSubject else { return false }
+        if path == "/chat/v2/legacy/messages" {
+            return accepted.raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1"
+                && accepted.raw?["envelope"]?["cipher"] == body["cipher"]
+                && accepted.raw?["envelope"]?["own_key_id"] == body["sender_key_id"]
+        }
+        return path == "/chat/v2/messages"
+    }
+}
+
+enum ChatVisibleRead {
+    static func latest(_ messages: [ChatMessage], frames: [String: CGRect], viewport: CGSize, owner: String?, after: Int64, enabled: Bool) -> ChatMessage? {
+        guard enabled else { return nil }
+        let area = CGRect(origin: .zero, size: viewport)
+        return messages.filter {
+            $0.recipient == owner && $0.hasServerSequence && $0.text != nil && $0.problem == nil && $0.status == "incoming"
+                && (Int64($0.sequence) ?? 0) > after && (frames[$0.id]?.intersection(area).height ?? 0) > 16
+        }.max { (Int64($0.sequence) ?? 0) < (Int64($1.sequence) ?? 0) }
+    }
 }
 
 struct ChatCapabilities {

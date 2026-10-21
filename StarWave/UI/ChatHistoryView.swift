@@ -41,7 +41,7 @@ struct ChatHistoryView: View {
                     Text(backup.root).font(.system(.caption, design: .monospaced)).textSelection(.enabled).privacySensitive()
                     Button("复制恢复密钥（仅本机剪贴板 60 秒）") { copySecret(backup.root) }
                     Toggle("我已在安全位置保存恢复密钥", isOn: $savedKey)
-                    Button("上传此加密备份") { run { try await chat.uploadBackup(backup); message = "备份已就绪。30天从创建算起，读取不会续期。"; await load() } }.disabled(!available || working || !savedKey)
+                    Button("确认保存密钥并上传此备份") { run { try await chat.confirmBackupKeySaved(backup.id); try await chat.uploadBackup(backup); message = "备份已就绪。30天从创建算起，读取不会续期。"; await load() } }.disabled(!available || working || !savedKey)
                 }
                 Text("密文分块1MiB，单包100MiB；账号额度和并发限制以服务器为准。上传中断后使用原加密分块续传，不重新加密同一包。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -81,6 +81,7 @@ struct ChatHistoryView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(p.kind == "backup" ? "手动备份" : "设备迁移")
                             Text(p.id).font(.caption).textSelection(.enabled)
+                            if p.kind == "backup" { Text("首次上传及续传都需要对这个备份确认已保存恢复密钥。").font(.caption).foregroundStyle(.secondary) }
                             Button("使用原分块继续上传") { run { try await chat.resumePrepared(p); message = "该包已上传并完成。"; await load() } }.disabled(working || !available)
                             if p.kind == "backup" { Button("再次查看恢复密钥") { backup = p; savedKey = false } }
                         }

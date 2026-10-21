@@ -21,6 +21,23 @@ struct ChatKeyRing: Codable {
     func key(_ id: String) throws -> ChatPrivateKey {
         guard let key = (keys + archiveKeys).first(where: { $0.keyID == id }) else { throw ChatFailure.invalid("此设备缺少解密所需的旧私钥，请从可信设备或加密备份恢复。") }; return key
     }
+    func mergingHistory(_ importedKeys: [ChatPrivateKey]) throws -> ChatKeyRing {
+        var merged = self
+        for imported in importedKeys {
+            guard UUID(uuidString: imported.keyID) != nil else { throw ChatFailure.invalid("恢复私钥身份无效。") }
+            let pub: String
+            switch imported.algorithm {
+            case "X25519": pub = (ChatCrypto.xPrefix + (try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: imported.privateData)).publicKey.rawRepresentation).base64EncodedString()
+            case "P256": pub = (try P256.KeyAgreement.PrivateKey(rawRepresentation: imported.privateData)).publicKey.derRepresentation.base64EncodedString()
+            default: throw ChatFailure.invalid("恢复私钥算法未知。")
+            }
+            guard imported.publicKey == pub else { throw ChatFailure.invalid("恢复私钥与公钥不匹配。") }
+            if let existing = (merged.keys + merged.archiveKeys).first(where: { $0.keyID == imported.keyID }) {
+                guard existing.algorithm == imported.algorithm, existing.privateData == imported.privateData, existing.publicKey == imported.publicKey else { throw ChatFailure.invalid("恢复私钥与本机冲突。") }
+            } else { merged.archiveKeys.append(imported) }
+        }
+        return merged
+    }
 }
 
 enum ChatCrypto {

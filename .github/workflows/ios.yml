@@ -61,6 +61,19 @@ jobs:
           else
             echo "::warning::No iOS Simulator runtime is installed; build-for-testing completed, runtime tests skipped."
           fi
+      - name: Export UI regression previews
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/StarWaveTests.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/StarWaveTests.xcresult" --output-path "$RUNNER_TEMP/StarWave-test-previews"
+          fi
+      - name: Upload UI regression previews
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: StarWave-test-previews
+          path: ${{ runner.temp }}/StarWave-test-previews
+          if-no-files-found: warn
       - name: Upload unit test results
         if: always()
         uses: actions/upload-artifact@v7.0.1

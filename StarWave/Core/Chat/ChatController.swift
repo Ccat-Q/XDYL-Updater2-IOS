@@ -35,6 +35,7 @@ final class ChatController: ObservableObject {
     let sessionStore: SessionStore
     let mainAPI: APIClient
     var connection: ChatConnection?
+    var localStore: ChatLocalStore?
     var foreground = false
     var ticket = UUID()
     var namespace: String?
@@ -44,10 +45,13 @@ final class ChatController: ObservableObject {
     private var monitorID = UUID()
     private var mainGeneration: UUID
     private let defaults: UserDefaults
+    private let transportFactory: (URL) -> ChatTransport
     var changedPeers = Set<String>()
 
-    init(sessionStore: SessionStore, mainAPI: APIClient, defaults: UserDefaults = .standard) {
+    init(sessionStore: SessionStore, mainAPI: APIClient, defaults: UserDefaults = .standard,
+         transportFactory: @escaping (URL) -> ChatTransport = { ChatTransport(relay: $0) }) {
         self.sessionStore = sessionStore; self.mainAPI = mainAPI; self.defaults = defaults
+        self.transportFactory = transportFactory
         mainGeneration = sessionStore.generation
         relayText = defaults.string(forKey: "chat.relay") ?? ChatValidation.defaultRelay
     }
@@ -62,6 +66,7 @@ final class ChatController: ObservableObject {
     }
     func resetIdentity() {
         suspend(); namespace = nil; subject = nil; username = ""; enabled = false
+        localStore = nil
         messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; features = []; changedPeers = []
         needsReset = false; error = nil; currentDeviceID = ""; status = "未启用私聊"
     }
@@ -73,7 +78,7 @@ final class ChatController: ObservableObject {
     func setEnabled(_ value: Bool) {
         guard let ns = namespace else { error = "主站资料缺少稳定账号 ID，请刷新资料后重试。"; return }
         defaults.set(value, forKey: "chat.consent." + ns); enabled = value
-        if !value { suspend(); messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; status = "私聊已停用，本地历史和密钥未删除" }
+        if !value { suspend(); localStore = nil; messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; status = "私聊已停用，本地历史和密钥未删除" }
     }
     func changeRelay(_ raw: String, profile: UserProfile?) throws {
         let url = try ChatValidation.relay(raw)
@@ -84,11 +89,20 @@ final class ChatController: ObservableObject {
     func current(_ c: ChatConnection) throws {
         try Task.checkCancellation()
         guard c.ticket == ticket, c.namespace == namespace, mainGeneration == sessionStore.generation,
-              sessionStore.isAuthenticated, enabled, foreground else { throw CancellationError() }
+              connection?.transport === c.transport, sessionStore.isAuthenticated, enabled, foreground else { throw CancellationError() }
     }
-    func monitor() async {
+    func localStorage() throws -> ChatLocalStore {
+        guard let ns = namespace, enabled, mainGeneration == sessionStore.generation, sessionStore.isAuthenticated else { throw CancellationError() }
+        if let localStore { return localStore }
+        let vault = ChatKeyVault(namespace: ns)
+        let ring = try vault.load() ?? ChatKeyRing.create()
+        try vault.save(ring)
+        let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
+        localStore = store; return store
+    }
+    func monitor(pollIntervalNanoseconds: UInt64? = nil) async {
         guard canConnect else { return }
-        foreground = true; let id = UUID(); monitorID = id
+        foreground = true; let id = UUID(), stamp = ticket; monitorID = id
         defer { if monitorID == id { suspend() } }
         var delay = 8
         while !Task.isCancelled, monitorID == id, canConnect, foreground {
@@ -96,7 +110,12 @@ final class ChatController: ObservableObject {
                 let c = try await connect()
                 try await sync(c)
                 try current(c); error = nil; status = "已连接 · 前台每 8 秒同步"; delay = 8
-            } catch is CancellationError { return }
+            } catch is CancellationError {
+                // Transport replacement during renewal is not cancellation of
+                // this foreground lifecycle. Never suspend its new connection.
+                if Task.isCancelled || ticket != stamp || monitorID != id || !foreground { return }
+                continue
+            }
             catch {
                 connected = false; self.error = error.localizedDescription; status = "离线或需要处理"
                 if let e = error as? ChatFailure, e.code == "CURSOR_EXPIRED" { needsReset = true }
@@ -105,7 +124,7 @@ final class ChatController: ObservableObject {
                 if let failure = error as? ChatFailure, case .service(429, _, let retry) = failure { delay = min(3600, max(8, retry ?? delay)) }
                 else { delay = min(60, max(8, delay * 2)) }
             }
-            do { try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: pollIntervalNanoseconds ?? UInt64(delay) * 1_000_000_000) } catch { return }
         }
     }
     func refresh() async { await perform { let c = try await self.connect(); try await self.sync(c) } }
@@ -119,22 +138,46 @@ final class ChatController: ObservableObject {
         if let task = connectionTask { return try await task.value }
         let stamp = ticket, generation = sessionStore.generation
         let task: Task<ChatConnection, Error> = Task { @MainActor in
+            // Drain the old page before replacing its transport. Its cursor
+            // commit/ACK cannot be split by a concurrent session renewal.
+            if let flight = self.syncTask { _ = try? await flight.value }
+            try Task.checkCancellation()
             let relay = try ChatValidation.relay(self.relayText)
             let vault = ChatKeyVault(namespace: ns)
             var ring = try vault.load() ?? ChatKeyRing.create()
             try vault.save(ring) // Save before issuing public-key registration.
-            let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
-            let transport = ChatTransport(relay: relay)
+            let store = try self.localStorage()
+            let transport = self.transportFactory(relay)
             var succeeded = false; defer { if !succeeded { transport.cancel() } }
             @MainActor func valid() throws {
                 try Task.checkCancellation()
                 guard self.ticket == stamp, self.namespace == ns, self.sessionStore.generation == generation, self.enabled, self.foreground else { throw CancellationError() }
             }
-            let history = try await store.all(ChatMessage.self, kind: "message")
-            let contacts = try await store.all(ChatPeer.self, kind: "peer")
-            let outbox = try await store.all(ChatPendingSend.self, kind: "pending")
-            let cached = try await store.get([ChatConversation].self, kind: "state", id: "conversations") ?? []
-            try valid(); self.messages = history; self.peers = contacts; self.pending = outbox; self.conversations = cached
+            if self.connection == nil {
+                var history = try await store.all(ChatMessage.self, kind: "message")
+                let contacts = try await store.all(ChatPeer.self, kind: "peer")
+                var repairs: [ChatMessage] = []
+                for index in history.indices {
+                    if history[index].sender != owner, history[index].raw != nil,
+                       contacts.first(where: { $0.subject == history[index].peerSubject })?.trustVersion != 1 {
+                        history[index].text = nil; history[index].problem = "请重新核对联系人指纹；旧版本记录的历史公钥没有完整的核验来源。"
+                        repairs.append(history[index])
+                    }
+                    let oldID = history[index].clientID
+                    history[index].associateLegacySend(owner: owner, deviceID: ring.deviceID)
+                    if oldID != history[index].clientID { repairs.append(history[index]) }
+                }
+                // Reconcile historical duplicate bubbles only with matching
+                // accepted ciphertext, sender, recipient and device evidence.
+                let outbox = try await store.all(ChatPendingSend.self, kind: "pending")
+                repairs += history.filter { message in outbox.contains { $0.isAccepted(by: message) } }
+                if !repairs.isEmpty { try await store.commit(events: [], messages: repairs, cursor: nil) }
+                let pending = try await store.all(ChatPendingSend.self, kind: "pending")
+                let cached = try await store.get([ChatConversation].self, kind: "state", id: "conversations") ?? []
+                let retained = Set(pending.map { $0.message.id })
+                try valid(); self.messages = history.filter { !$0.id.hasPrefix("pending:") || retained.contains($0.id) }
+                self.peers = contacts; self.pending = pending; self.conversations = cached
+            }
             self.currentDeviceID = ring.deviceID; self.status = "正在验证中继能力"
             let caps = try ChatCapabilities(try await transport.json("/chat/v2/capabilities")["data"] ?? .null)
             try valid(); self.features = caps.features
@@ -155,6 +198,11 @@ final class ChatController: ObservableObject {
                 guard ring.revision == "0" else { throw ChatFailure.invalid("云端未找到本机已登记的密钥，请检查撤销或恢复状态。") }
                 let registered = try await transport.json("/chat/v2/devices/\(ring.deviceID)/keys", token: token, method: "POST", body: .object(["expected_revision": .string("0"), "keys": .array(ring.keys.map { $0.published.json })]))["data"] ?? .null
                 try valid(); ring.revision = try registered.chatSequence("key_revision")
+            }
+            try valid()
+            if let latest = try vault.load() {
+                guard latest.deviceID == ring.deviceID else { throw CancellationError() }
+                ring.archiveKeys = latest.archiveKeys
             }
             try vault.save(ring); try valid()
             let c = ChatConnection(ticket: stamp, namespace: ns, subject: owner, username: name, token: token, expiresAt: try session.chatInt64("expires_at_ms"), transport: transport, store: store, ring: ring)
@@ -178,6 +226,7 @@ final class ChatController: ObservableObject {
         let task = Task { @MainActor in try await self.syncPages(c) }; syncTask = task
         defer { if ticket == c.ticket { syncTask = nil } }
         try await task.value
+        try current(c); connected = true
     }
     func localWrite<T>(_ c: ChatConnection, _ action: () async throws -> T) async throws -> T {
         // Sync can suspend during decryption/network IO. Serialize local edits
@@ -198,38 +247,27 @@ final class ChatController: ObservableObject {
             let page = try await c.transport.json("/chat/v2/sync", token: c.token, query: query)["data"] ?? .null
             try current(c)
             let events = try page["events"].chatArray(), next = try page.chatString("next_cursor")
-            var updated = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+            var decoded: [ChatMessage] = []
             for event in events {
                 let type = try event.chatString("type")
                 switch type {
                 case "message":
-                    var message = try decodeMessage(event, c: c)
-                    if let old = updated[message.id], ["read", "received"].contains(old.status), message.status == "accepted" { message.status = old.status }
-                    updated[message.id] = message
-                    updated.removeValue(forKey: "pending:" + message.clientID)
-                case "delivered":
-                    if let id = event["message_id"]?.stringValue, var m = updated[id], m.sender == c.subject,
-                       event["receiver_subject"]?.stringValue == m.recipient, m.status == "accepted" { m.status = "received"; updated[id] = m }
-                case "read":
-                    if let reader = event["reader_subject"]?.stringValue, let conv = event["conversation_id"]?.stringValue, let upto = Int64(event["up_to_conversation_seq"]?.stringValue ?? "") {
-                        for (id, var m) in updated where m.conversationID == conv && m.sender == c.subject && m.recipient == reader && (Int64(m.sequence) ?? Int64.max) <= upto { m.status = "read"; updated[id] = m }
-                    }
-                case "message_hidden", "message_recalled":
-                    if let id = event["message_id"]?.stringValue, var m = updated[id] { m.text = nil; m.raw = nil; m.status = type == "message_recalled" ? "recalled" : "hidden"; updated[id] = m }
-                case "history_cleared":
-                    if let conv = event["conversation_id"]?.stringValue, let upto = Int64(event["through_seq"]?.stringValue ?? "") {
-                        for (id, var m) in updated where m.conversationID == conv && (Int64(m.sequence) ?? Int64.max) <= upto { m.text = nil; m.raw = nil; m.status = "hidden"; updated[id] = m }
-                    }
+                    decoded.append(try decodeMessage(event, c: c))
+                case "delivered", "read", "message_hidden", "message_recalled", "history_cleared": break
                 case "keyset_changed": if let owner = event["subject"]?.stringValue, owner != c.subject { changedPeers.insert(owner) }
                 case "preferences_changed", "blocks_changed", "notification_preferences_changed", "conversation_state_changed": break
                 default: unknownEvents = true
                 }
             }
             try current(c)
-            try await c.store.commit(events: events, messages: Array(updated.values), cursor: next)
+            let changes = try await c.store.commit(events: events, messages: decoded, cursor: next, owner: c.subject)
             try current(c)
-            messages = Array(updated.values)
             pending = try await c.store.all(ChatPendingSend.self, kind: "pending")
+            if !changes.isEmpty {
+                let ids = Set(changes.map(\.id)), retained = Set(pending.map { $0.message.id })
+                messages.removeAll { ids.contains($0.id) || ($0.id.hasPrefix("pending:") && !retained.contains($0.id)) }
+                messages += changes
+            }
             try current(c)
             _ = try await c.transport.json("/chat/v2/sync/ack", token: c.token, method: "POST", body: .chatObject(["cursor": next]))
             try current(c); cursor = next
@@ -242,6 +280,7 @@ final class ChatController: ObservableObject {
         guard sender == c.subject || recipient == c.subject else { throw ChatFailure.invalid("拒绝保存不属于当前账号的消息。") }
         let peer = sender == c.subject ? recipient : sender
         var message = ChatMessage(id: try event.chatString("message_id"), clientID: try event.chatString("client_msg_id"), conversationID: try event.chatString("conversation_id"), sequence: try event.chatSequence("conversation_seq"), sender: sender, recipient: recipient, text: nil, problem: nil, acceptedAt: try event.chatInt64("accepted_at_ms"), status: sender == c.subject ? "accepted" : "incoming", raw: event, peerSubject: peer)
+        message.associateLegacySend(owner: c.subject, deviceID: c.ring.deviceID)
         if let unavailable = event["unavailable"]?.stringValue { message.status = unavailable == "recalled" ? "recalled" : "hidden"; message.raw = nil; return message }
         do {
             guard let e = event["envelope"] else { throw ChatFailure.invalid("此设备没有消息密文。") }
@@ -271,7 +310,7 @@ final class ChatController: ObservableObject {
         return message
     }
     private func verifyRemote(peer: String, keyID: String, publicKey: String) throws {
-        guard !publicKey.isEmpty, let trusted = peers.first(where: { $0.subject == peer }), !trusted.fingerprint.isEmpty,
+        guard !publicKey.isEmpty, let trusted = peers.first(where: { $0.subject == peer }), trusted.trustVersion == 1, !trusted.fingerprint.isEmpty,
               trusted.trustedKeys[keyID] == publicKey else { throw ChatFailure.keyChanged(peer) }
     }
     func refreshConversations(_ c: ChatConnection) async throws {
@@ -288,10 +327,11 @@ final class ChatController: ObservableObject {
         for conv in list {
             var peer = peers.first(where: { $0.subject == conv.peerSubject }) ?? ChatPeer(subject: conv.peerSubject, username: conv.peerUsername)
             peer.username = conv.peerUsername
-            try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c)
+            if peers.first(where: { $0.subject == peer.subject }) != peer { try await c.store.put(peer, kind: "peer", id: peer.subject) }
+            try current(c)
             peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
         }
-        try await c.store.put(list, kind: "state", id: "conversations")
+        if try await c.store.get([ChatConversation].self, kind: "state", id: "conversations") != list { try await c.store.put(list, kind: "state", id: "conversations") }
     }
     func resetCursor() async throws {
         let c = try await connect()

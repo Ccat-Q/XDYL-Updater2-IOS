@@ -29,18 +29,16 @@ extension ChatController {
         var peer = peers.first(where: { $0.subject == inspection.subject }) ?? ChatPeer(subject: inspection.subject, username: inspection.username)
         peer.fingerprint = inspection.fingerprint; peer.username = inspection.username; peer.mode = mode
         if let note { peer.note = String(note.prefix(64)) }
+        if peer.trustVersion != 1 { peer.trustedKeys = [:] }
         inspection.publicKeys.forEach { peer.trustedKeys[$0.key] = $0.value }
-        // Historical V2 public keys are delivered by the relay, not invented
-        // from the current keyset. Remember them only after explicit trust.
-        for message in messages where message.peerSubject == peer.subject && message.sender == peer.subject {
-            if let e = message.raw?["envelope"], let id = e["sender_key_id"]?.stringValue, let pub = e["sender_public_key"]?.stringValue,
-               peer.trustedKeys[id] == nil { peer.trustedKeys[id] = pub }
-        }
+        peer.trustVersion = 1
+        // Trust only the displayed fingerprint's keyset. Previously verified
+        // keys survive rotation; raw messages cannot introduce a trusted key.
         try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c)
         peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
         changedPeers.remove(inspection.subject)
         var restored = messages
-        for i in restored.indices where restored[i].peerSubject == peer.subject && restored[i].text == nil {
+        for i in restored.indices where restored[i].peerSubject == peer.subject {
             if let raw = restored[i].raw { restored[i] = try decodeMessage(raw, c: c) }
         }
         for message in restored { try await c.store.put(message, kind: "message", id: message.id) }
@@ -54,11 +52,11 @@ extension ChatController {
             peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
         }
     }
-    func send(_ text: String, to peer: ChatPeer) async throws {
+    func send(_ text: String, to peer: ChatPeer, onQueued: (() -> Void)? = nil) async throws {
         guard !busy else { throw ChatFailure.invalid("正在准备发送，请稍候。") }
         try ChatValidation.plaintext(text); busy = true; defer { busy = false }
         let c = try await connect(), inspection = try await inspectPeer(peer.username)
-        guard !changedPeers.contains(peer.subject), inspection.subject == peer.subject, !peer.fingerprint.isEmpty, inspection.fingerprint == peer.fingerprint else { throw ChatFailure.keyChanged(peer.subject) }
+        guard peer.trustVersion == 1, !changedPeers.contains(peer.subject), inspection.subject == peer.subject, !peer.fingerprint.isEmpty, inspection.fingerprint == peer.fingerprint else { throw ChatFailure.keyChanged(peer.subject) }
         let id = UUID().uuidString.lowercased(), now = Self.now
         let useLegacy = peer.mode == .legacy || (peer.mode == .automatic && !inspection.protocols.contains("nu-chat-v2"))
         let path: String, request: JSONValue
@@ -94,6 +92,9 @@ extension ChatController {
             try await c.store.savePending(pending); try current(c)
             self.pending.append(pending); messages.append(message)
         }
+        // Ownership moves from the composer to the durable outbox before any
+        // request. Uncertain HTTP results must retry this UUID, not mint another.
+        onQueued?()
         try await submit(pending, c: c)
     }
     func retry(_ pending: ChatPendingSend) async throws { let c = try await connect(); try await submit(pending, c: c) }
@@ -116,29 +117,48 @@ extension ChatController {
             try await c.store.commit(events: [], messages: [message], cursor: cursor)
             try current(c); messages.removeAll { $0.id == pending.message.id || $0.id == message.id }; messages.append(message)
             }
+        } else {
+            try await localWrite(c) {
+                // Legacy acceptance contains only numeric seq, not the unified
+                // message identity. Retain the exact outbox until sync proves it.
+                if self.pending.contains(where: { $0.id == pending.id }) {
+                    var accepted = pending; accepted.message.status = "accepted_waiting_sync"
+                    try await c.store.savePending(accepted); try current(c)
+                    self.pending.removeAll { $0.id == pending.id }; self.pending.append(accepted)
+                    messages.removeAll { $0.id == pending.message.id }; messages.append(accepted.message)
+                }
+            }
         }
-        // Legacy response only contains numeric seq. Its canonical ID arrives
-        // in sync; keep outbox until that sync commit succeeds.
-        try await sync(c)
+        do { try await sync(c) }
+        catch is CancellationError { throw CancellationError() }
+        catch { try current(c); self.error = "服务端已接受发送，后续同步暂未完成。请刷新或原样重试，不要重新发送同一内容。" }
         self.pending = try await c.store.all(ChatPendingSend.self, kind: "pending"); try current(c)
     }
     func draft(for peer: String) async -> String {
-        guard let c = connection else { return "" }
-        return (try? await c.store.get(String.self, kind: "draft", id: peer)) ?? ""
+        let stamp = ticket
+        do {
+            let store = try localStorage(), value = try await store.get(String.self, kind: "draft", id: peer) ?? ""
+            guard stamp == ticket else { return "" }; return value
+        } catch is CancellationError { return "" }
+        catch { self.error = error.localizedDescription; return "" }
     }
-    func saveDraft(_ text: String, peer: String) async {
-        guard let c = connection, (try? current(c)) != nil else { return }
-        do { try await c.store.put(String(text.prefix(16384)), kind: "draft", id: peer) } catch { self.error = error.localizedDescription }
+    func saveDraft(_ text: String, peer: String, namespace expected: String? = nil) async {
+        guard expected == nil || expected == namespace else { return }
+        let stamp = ticket
+        do { let store = try localStorage(); try await store.put(text, kind: "draft", id: peer) }
+        catch is CancellationError {} catch { if stamp == ticket { self.error = error.localizedDescription } }
     }
-    func markRead(_ message: ChatMessage) async throws {
-        guard message.recipient == subject, message.text != nil, message.problem == nil, message.status == "incoming" else { return }
-        if let conv = conversations.first(where: { $0.id == message.conversationID }), conv.historyGap && conv.unread > conv.availableUnread { return }
-        guard !messages.contains(where: { $0.conversationID == message.conversationID && $0.recipient == subject && $0.status == "incoming" && $0.text == nil && (Int64($0.sequence) ?? Int64.max) <= (Int64(message.sequence) ?? 0) }) else { return }
+    @discardableResult
+    func markRead(_ message: ChatMessage) async throws -> Bool {
+        guard message.recipient == subject, message.text != nil, message.problem == nil, message.status == "incoming" else { return false }
+        if let conv = conversations.first(where: { $0.id == message.conversationID }), conv.historyGap && conv.unread > conv.availableUnread { return false }
+        guard !messages.contains(where: { $0.conversationID == message.conversationID && $0.recipient == subject && $0.status == "incoming" && $0.text == nil && (Int64($0.sequence) ?? Int64.max) <= (Int64(message.sequence) ?? 0) }) else { return false }
         let c = try await connect()
         // read only after visible, decrypted message and page ACK has completed.
         if let task = syncTask { try await task.value }
         _ = try await json("/chat/v2/conversations/\(message.conversationID)/read", method: "POST", body: .chatObject(["up_to_conversation_seq": message.sequence]))
         try await refreshConversations(c)
+        return true
     }
     func hide(_ message: ChatMessage) async throws {
         _ = try await json("/chat/v2/messages/\(message.id)", method: "DELETE")

@@ -69,6 +69,7 @@ private struct ChatPrivacyView: View {
     @State private var retention = 30
     @State private var ready = false
     @State private var saving = false
+    @State private var loadRevision = UUID()
     var body: some View {
         Form {
             ChatStatusSection()
@@ -79,12 +80,12 @@ private struct ChatPrivacyView: View {
                 Toggle("公开我的未来已读", isOn: $receipts)
                 Text("关闭仍记录自己的阅读进度并清除未读，也仍可看到对方公开已读；不会收回已经披露的回执。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            }.disabled(saving || !ready)
             Section("自己的中继副本") {
                 Picker("保留期限", selection: $retention) { Text("1 天").tag(1); Text("7 天").tag(7); Text("30 天").tag(30) }
                 Text("缩短立即裁剪自己的中继副本，不影响对方；延长不会恢复已过期内容。已在本机保存的历史需另行清理。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            }.disabled(saving || !ready)
             Button(saving ? "正在保存…" : "保存") { save() }.disabled(!ready || saving)
             Button("重新读取") { Task { await load() } }.disabled(saving)
         }
@@ -92,8 +93,11 @@ private struct ChatPrivacyView: View {
         .task { await load() }
     }
     private func load() async {
+        ready = false; let stamp = UUID(); loadRevision = stamp
         await chat.perform {
-            let p = try await chat.json("/chat/v2/me/preferences"); revision = try p.chatSequence("revision")
+            let p = try await chat.json("/chat/v2/me/preferences")
+            guard loadRevision == stamp else { return }
+            revision = try p.chatSequence("revision")
             policy = p["receive_policy"]?.stringValue ?? "everyone"; receipts = p["read_receipts"]?.boolValue ?? true
             retention = p["retention_days"]?.integer ?? 30; ready = true
         }
@@ -231,6 +235,7 @@ struct ChatNotificationSettingsView: View {
     @State private var effective = "尚未读取"
     @State private var ready = false
     @State private var saving = false
+    @State private var loadRevision = UUID()
     private var base: String {
         let owner = scope == "account" ? "me" : "devices/\(chat.currentDeviceID)"
         return "/chat/v2/" + owner + (conversationID.map { "/conversations/" + $0 } ?? "") + "/notifications"
@@ -240,9 +245,9 @@ struct ChatNotificationSettingsView: View {
             ChatStatusSection()
             Section {
                 Picker("配置范围", selection: $scope) { Text("账号").tag("account"); Text("当前设备").tag("device") }
-                inheritancePicker("提醒", value: $enabled); inheritancePicker("静音", value: $muted)
-                TextField("静音至 Unix 毫秒（留空继承，0清除）", text: $until).keyboardType(.numberPad)
-            }
+                inheritancePicker("提醒", value: $enabled).disabled(!ready); inheritancePicker("静音", value: $muted).disabled(!ready)
+                TextField("静音至 Unix 毫秒（留空继承，0清除）", text: $until).keyboardType(.numberPad).disabled(!ready)
+            }.disabled(saving)
             Section("静默时间") {
                 Picker("时段", selection: $quiet) { Text("继承上层").tag("inherit"); Text("明确关闭").tag("off"); Text("自定义").tag("on") }
                 if quiet == "on" {
@@ -252,7 +257,7 @@ struct ChatNotificationSettingsView: View {
                 }
                 Text("账号默认 → 设备默认 → 账号会话 → 设备会话逐字段覆盖。静默结束只汇总仍未读的消息；仅接收不算已读。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            }.disabled(saving || !ready)
             Section("当前设备最终效果") { Text(effective).font(.footnote) }
             Button(saving ? "正在保存…" : "保存本层设置") { save() }.disabled(!ready || saving)
             Button("重新读取") { Task { await load() } }.disabled(saving)
@@ -264,9 +269,9 @@ struct ChatNotificationSettingsView: View {
         Picker(title, selection: value) { Text("继承").tag("inherit"); Text("开启").tag("on"); Text("关闭").tag("off") }
     }
     private func load() async {
-        ready = false; let target = base
+        ready = false; let target = base, stamp = UUID(); loadRevision = stamp
         await chat.perform {
-            let result = try await chat.json(target); try Task.checkCancellation(); guard target == base else { return }
+            let result = try await chat.json(target); try Task.checkCancellation(); guard target == base, stamp == loadRevision else { return }
             revision = try result.chatSequence("revision"); let o = result["overrides"] ?? .object([:])
             enabled = o["enabled"]?.boolValue.map { $0 ? "on" : "off" } ?? "inherit"
             muted = o["muted"]?.boolValue.map { $0 ? "on" : "off" } ?? "inherit"
@@ -309,6 +314,8 @@ private struct ChatBarkView: View {
     @State private var key = ""
     @State private var enabled = true
     @State private var saving = false
+    @State private var ready = false
+    @State private var loadRevision = UUID()
     @State private var confirmDelete = false
     private var base: String { "/chat/v2/devices/\(chat.currentDeviceID)/bark" }
     var body: some View {
@@ -328,7 +335,8 @@ private struct ChatBarkView: View {
                 Button("读取云端状态") { run { let s = try await chat.json(base + "/status"); status = s["last_result"]?.stringValue ?? "none" } }
                 Text(status).font(.footnote)
                 Button("删除本设备 Bark 绑定", role: .destructive) { confirmDelete = true }.disabled(saving || state["key_configured"]?.boolValue != true)
-            }
+            }.disabled(saving || !ready)
+            Button("重新读取绑定") { Task { await load() } }.disabled(saving)
         }
         .navigationTitle("Bark 提醒")
         .task { await load() }
@@ -339,12 +347,21 @@ private struct ChatBarkView: View {
         } message: { Text("取消未发送任务，不能撤回已在途通知。") }
     }
     private func run(_ operation: @escaping () async throws -> Void) { saving = true; Task { defer { saving = false }; await chat.perform(operation) } }
-    private func load() async { await chat.perform { _ = try await chat.connect(); state = try await chat.json(base); enabled = state["enabled"]?.boolValue ?? false } }
+    private func load() async {
+        ready = false; let stamp = UUID(); loadRevision = stamp
+        await chat.perform {
+            _ = try await chat.connect(); let value = try await chat.json(base)
+            guard loadRevision == stamp else { return }
+            state = value; enabled = state["enabled"]?.boolValue ?? false; ready = true
+        }
+    }
     private func save() {
+        let submittedKey = key
+        var fields: [String: JSONValue] = ["enabled": .bool(enabled), "expected_revision": state["revision"] ?? .string("0")]
+        if !submittedKey.isEmpty { fields["device_key"] = .string(submittedKey) }
+        let request = JSONValue.object(fields)
         run {
-            var fields: [String: JSONValue] = ["enabled": .bool(enabled), "expected_revision": state["revision"] ?? .string("0")]
-            if !key.isEmpty { fields["device_key"] = .string(key) }
-            _ = try await chat.json(base, method: "PUT", body: .object(fields)); key = ""; await load()
+            _ = try await chat.json(base, method: "PUT", body: request); if key == submittedKey { key = "" }; await load()
         }
     }
 }

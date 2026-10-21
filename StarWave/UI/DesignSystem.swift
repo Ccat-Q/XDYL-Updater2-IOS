@@ -53,4 +53,54 @@ extension View {
             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
     }
+
+    func appChatControlSurface(cornerRadius: CGFloat, prominent: Bool = false) -> some View {
+        modifier(ChatControlSurface(cornerRadius: cornerRadius, prominent: prominent))
+    }
+}
+
+/// Separate functional glass shapes share one renderer, without nesting glass
+/// inside glass. Spacing stays below the composer's gap so text and send remain
+/// distinct at rest. Older SDKs never have to type-check iOS 26 APIs.
+struct AppGlassControls<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+#if compiler(>=6.2)
+        if #available(iOS 26.0, *) { GlassEffectContainer(spacing: 8) { content() } }
+        else { content() }
+#else
+        content()
+#endif
+    }
+}
+
+private struct ChatControlSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    let cornerRadius: CGFloat
+    let prominent: Bool
+    func body(content: Content) -> some View {
+        surface(content)
+            .overlay {
+                if contrast == .increased || reduceTransparency {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.35), lineWidth: 1).allowsHitTesting(false)
+                }
+            }
+    }
+    @ViewBuilder private func surface(_ content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+#if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                content.glassEffect(prominent ? .regular.tint(.accentColor).interactive() : .regular, in: .rect(cornerRadius: cornerRadius))
+            } else {
+                content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+#else
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+#endif
+        }
+    }
 }

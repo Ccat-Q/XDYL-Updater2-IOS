@@ -69,18 +69,59 @@ actor ChatLocalStore {
         try bind(kind, at: 1, to: stmt); try bind(id, at: 2, to: stmt)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw ChatFailure.storage }
     }
-    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?) throws {
+    @discardableResult
+    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?, owner: String? = nil) throws -> [ChatMessage] {
         try execute("BEGIN IMMEDIATE")
         do {
             for event in events { try put(event, kind: "event", id: try event.chatSequence("event_seq")) }
-            for message in messages {
-                try put(message, kind: "message", id: message.id)
-                if message.status != "pending", let pending = try get(ChatPendingSend.self, kind: "pending", id: message.clientID), pending.message.sender == message.sender, pending.peerSubject == message.peerSubject {
-                    try remove(kind: "pending", id: message.clientID); try remove(kind: "message", id: "pending:" + message.clientID)
+            var changed: [String: ChatMessage] = [:]
+            for var message in messages {
+                if let old = try get(ChatMessage.self, kind: "message", id: message.id) {
+                    if ["hidden", "recalled"].contains(old.status) { message = old }
+                    else if ["read", "received"].contains(old.status), message.status == "accepted" { message.status = old.status }
+                }
+                changed[message.id] = message
+            }
+            // Apply range events to the actual database, not just a UI snapshot.
+            // A restore or an unloaded row must not evade a later deletion.
+            for event in events {
+                let type = event["type"]?.stringValue ?? ""
+                if let filter = ChatHistoryFilter.from(event) { try rememberFilter(filter) }
+                if ["read", "history_cleared"].contains(type) {
+                    let conv = event["conversation_id"]?.stringValue
+                    let upto = Int64(event[type == "read" ? "up_to_conversation_seq" : "through_seq"]?.stringValue ?? "") ?? -1
+                    let candidates = Dictionary((try all(ChatMessage.self, kind: "message")).map { ($0.id, $0) }, uniquingKeysWith: { _, new in new }).merging(changed, uniquingKeysWith: { _, new in new })
+                    for (id, var message) in candidates where message.hasServerSequence && message.conversationID == conv && (Int64(message.sequence) ?? Int64.max) <= upto {
+                        if type == "read" {
+                            guard message.sender == owner, message.recipient == event["reader_subject"]?.stringValue,
+                                  ["accepted", "received"].contains(message.status) else { continue }
+                            message.status = "read"
+                        } else { message.text = nil; message.raw = nil; message.problem = nil; message.status = "hidden" }
+                        changed[id] = message
+                    }
+                } else if ["message_hidden", "message_recalled", "delivered"].contains(type), let id = event["message_id"]?.stringValue,
+                          var message = try changed[id] ?? get(ChatMessage.self, kind: "message", id: id), message.hasServerSequence {
+                    if type == "delivered" {
+                        guard message.sender == owner, message.recipient == event["receiver_subject"]?.stringValue, message.status == "accepted" else { continue }
+                        message.status = "received"
+                    } else { message.text = nil; message.raw = nil; message.problem = nil; message.status = type == "message_recalled" ? "recalled" : "hidden" }
+                    changed[id] = message
                 }
             }
-            if let cursor { try put(cursor, kind: "state", id: "cursor") }
+            let filters = changed.isEmpty ? [] : try all(JSONValue.self, kind: "historyFilter")
+            for var message in Array(changed.values) {
+                if message.hasServerSequence, !ChatHistoryFilter.allows(message, filters: filters), !["hidden", "recalled"].contains(message.status) {
+                    message.text = nil; message.raw = nil; message.problem = nil; message.status = "hidden"
+                }
+                changed[message.id] = message
+                if try get(ChatMessage.self, kind: "message", id: message.id) != message { try put(message, kind: "message", id: message.id) }
+                if let pending = try get(ChatPendingSend.self, kind: "pending", id: message.clientID), pending.isAccepted(by: message) {
+                    try remove(kind: "pending", id: pending.id); try remove(kind: "message", id: pending.message.id)
+                }
+            }
+            if let cursor, try get(String.self, kind: "state", id: "cursor") != cursor { try put(cursor, kind: "state", id: "cursor") }
             try execute("COMMIT")
+            return Array(changed.values)
         } catch { try? execute("ROLLBACK"); throw error }
     }
     func savePending(_ pending: ChatPendingSend) throws {
@@ -91,33 +132,52 @@ actor ChatLocalStore {
     func clearLocalHistory() throws {
         // Keep cursor, encryption keys and trust pins. This is NOT a key reset
         // and must not replay already acknowledged history on the next launch.
-        try execute("DELETE FROM records WHERE kind IN ('message','event','pending','draft','preparedHistory','historyChunk','transferTarget')")
+        try execute("DELETE FROM records WHERE kind IN ('message','event','pending','draft','preparedHistory','historyChunk','transferTarget','backupKeySaved')")
     }
     func mergeRestored(_ messages: [ChatMessage], filters: [JSONValue]) throws {
         try execute("BEGIN IMMEDIATE")
         do {
-            for message in messages where ChatHistoryFilter.allows(message, filters: filters) {
+            for filter in filters { try rememberFilter(filter) }
+            let effective = try all(JSONValue.self, kind: "historyFilter")
+            try filterStored(effective)
+            for message in messages where ChatHistoryFilter.allows(message, filters: effective) {
                 if try get(ChatMessage.self, kind: "message", id: message.id) == nil { try put(message, kind: "message", id: message.id) }
             }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
     func applyFilters(_ filters: [JSONValue]) throws {
-        let messages = try all(ChatMessage.self, kind: "message")
-        try execute("BEGIN IMMEDIATE")
-        do {
-            for var message in messages where !ChatHistoryFilter.allows(message, filters: filters) && message.status != "pending" {
-                message.text = nil; message.raw = nil; message.status = "hidden"
-                try put(message, kind: "message", id: message.id)
-            }
-            try execute("COMMIT")
-        } catch { try? execute("ROLLBACK"); throw error }
+        try mergeRestored([], filters: filters)
+    }
+    private func filterStored(_ filters: [JSONValue]) throws {
+        for var message in try all(ChatMessage.self, kind: "message") where message.hasServerSequence && !ChatHistoryFilter.allows(message, filters: filters) && !["hidden", "recalled"].contains(message.status) {
+            message.text = nil; message.raw = nil; message.problem = nil; message.status = "hidden"
+            try put(message, kind: "message", id: message.id)
+        }
+    }
+    private func rememberFilter(_ filter: JSONValue) throws {
+        guard let type = filter["type"]?.stringValue, ["hidden", "recall", "clear"].contains(type), let target = filter["target"]?.stringValue else { throw ChatFailure.storage }
+        let id = type + ":" + target
+        if type == "clear", let old = try get(JSONValue.self, kind: "historyFilter", id: id),
+           (Int64(old["through_seq"]?.stringValue ?? "") ?? -1) >= (Int64(filter["through_seq"]?.stringValue ?? "") ?? -1) { return }
+        try put(filter, kind: "historyFilter", id: id)
     }
 }
 
 enum ChatHistoryFilter {
+    static func from(_ event: JSONValue) -> JSONValue? {
+        switch event["type"]?.stringValue {
+        case "message_hidden", "message_recalled":
+            guard let id = event["message_id"] else { return nil }
+            return .object(["type": .string(event["type"]?.stringValue == "message_recalled" ? "recall" : "hidden"), "target": id])
+        case "history_cleared":
+            guard let conv = event["conversation_id"], let seq = event["through_seq"] else { return nil }
+            return .object(["type": .string("clear"), "target": conv, "through_seq": seq])
+        default: return nil
+        }
+    }
     static func allows(_ message: ChatMessage, filters: [JSONValue]) -> Bool {
-        guard message.status != "hidden", message.status != "recalled", message.status != "pending", Int64(message.sequence) != nil else { return false }
+        guard message.hasServerSequence, message.status != "hidden", message.status != "recalled" else { return false }
         for f in filters {
             if ["hidden", "recall"].contains(f["type"]?.stringValue ?? ""), f["target"]?.stringValue == message.id { return false }
             if f["type"]?.stringValue == "clear", f["target"]?.stringValue == message.conversationID,

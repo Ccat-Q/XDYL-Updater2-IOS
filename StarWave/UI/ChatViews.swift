@@ -154,6 +154,9 @@ struct ChatNewContactView: View {
                 Button("查询账号与公钥") { lookup() }.disabled(loading || username.isEmpty)
             }
             if let inspection {
+                if inspection.protocols.contains("nu-chat-v1"), inspection.protocols.contains("nu-chat-v2"), mode == .automatic {
+                    Section { Text("此账号同时有新旧协议设备。自动模式只向新版 V2 设备发送，不向旧安卓流双发；若对方使用旧安卓，请明确选择“旧安卓兼容”。").font(.footnote).foregroundStyle(.orange) }
+                }
                 Section("核对指纹") {
                     Text(inspection.username).font(.headline)
                     Text(inspection.fingerprint).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
@@ -209,6 +212,9 @@ struct ChatThreadView: View {
     @State private var confirmingClear = false
     @State private var confirmingBlock = false
     @State private var recallTarget: ChatMessage?
+    @State private var hideTarget: ChatMessage?
+    @State private var visible = false
+    @State private var draftLoaded = false
     @State private var lastRead: Int64 = 0
     @State private var readTask: Task<Void, Never>?
     @State private var viewport: CGSize = .zero
@@ -256,10 +262,19 @@ struct ChatThreadView: View {
         .toolbar { ToolbarItem(placement: .navigationBarTrailing) { menu } }
         .sheet(isPresented: $showTrust) { NavigationStack { ChatNewContactView(initialUsername: contact.username) { _ in } } }
         .sheet(isPresented: $showSettings) { NavigationStack { ChatNotificationSettingsView(conversationID: conversation?.id) } }
-        .task { let value = await chat.draft(for: peer.subject); if draft.isEmpty { draft = value } }
-        .onChange(of: draft) { value in Task { await chat.saveDraft(value, peer: peer.subject) } }
-        .onDisappear { readTask?.cancel() }
-        .onChange(of: phase) { if $0 != .active { readTask?.cancel() } }
+        .task {
+            let identity = chat.namespace, before = draft, value = await chat.draft(for: peer.subject)
+            guard !Task.isCancelled, identity == chat.namespace else { return }
+            if draft == before, draft.isEmpty { draft = value }
+            draftLoaded = true
+            await chat.saveDraft(draft, peer: peer.subject, namespace: identity)
+        }
+        .onChange(of: draft) { value in if draftLoaded { let identity = chat.namespace; Task { await chat.saveDraft(value, peer: peer.subject, namespace: identity) } } }
+        .onAppear { visible = true; markVisible(visibleFrames) }
+        .onDisappear { visible = false; readTask?.cancel() }
+        .onChange(of: phase) { _ in markVisible(visibleFrames) }
+        .onChange(of: chat.connected) { _ in markVisible(visibleFrames) }
+        .onChange(of: search) { _ in markVisible(visibleFrames) }
         .alert("清空自己的会话历史？", isPresented: $confirmingClear) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) { if let conv = conversation { Task { await chat.perform { try await chat.clearConversation(conv) } } } }
@@ -271,13 +286,15 @@ struct ChatThreadView: View {
             Button("取消", role: .cancel) { recallTarget = nil }
             Button("撤回", role: .destructive) { if let target = recallTarget { Task { await chat.perform { try await chat.recall(target) } } }; recallTarget = nil }
         } message: { Text("十分钟内可要求双方不再显示。截图、导出及旧安卓已保存的记录无法远程抹除。") }
+        .alert("在自己的所有设备隐藏此消息？", isPresented: Binding(get: { hideTarget != nil }, set: { if !$0 { hideTarget = nil } })) {
+            Button("取消", role: .cancel) { hideTarget = nil }
+            Button("仅对自己隐藏", role: .destructive) {
+                if let target = hideTarget { Task { await chat.perform { try await chat.hide(target) } } }; hideTarget = nil
+            }
+        } message: { Text("同步影响自己账号的聊天设备及历史恢复过滤，不是仅在此屏幕收起。不会删除对方副本或已导出的内容。") }
     }
     private var composer: some View {
-        HStack(alignment: .bottom) {
-            TextField("文字消息", text: $draft, axis: .vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
-            Button { send() } label: { if sending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.title2) } }
-                .accessibilityLabel("发送文字").disabled(sending || !chat.connected || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.utf8.count > 16384)
-        }.padding().background(.bar)
+        ChatComposer(text: $draft, sending: sending, connected: chat.connected, protocolTitle: contact.mode.title, send: send)
     }
     private var menu: some View {
         Menu {
@@ -303,7 +320,7 @@ struct ChatThreadView: View {
                     Text(message.date, style: .time)
                     if mine { Text(message.stateTitle) }
                 }.font(.caption2).foregroundStyle(.secondary)
-                if let item = chat.pending.first(where: { $0.id == message.clientID && message.status == "pending" }) {
+                if let item = chat.pending.first(where: { $0.id == message.clientID && message.id.hasPrefix("pending:") }) {
                     Button("原样重试发送") { Task { await chat.perform { try await chat.retry(item) } } }.font(.caption)
                 }
                 if message.problem != nil { Button("核对密钥") { showTrust = true }.font(.caption) }
@@ -311,7 +328,7 @@ struct ChatThreadView: View {
             .contextMenu {
                 if let text = message.text { Button("复制文字") { UIPasteboard.general.setItems([["public.utf8-plain-text": text]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(60)]) } }
                 if !message.id.hasPrefix("pending:") {
-                    Button("仅对自己隐藏", role: .destructive) { Task { await chat.perform { try await chat.hide(message) } } }
+                    Button("仅对自己隐藏", role: .destructive) { hideTarget = message }
                     if mine, message.status != "recalled", ChatController.now - message.acceptedAt <= 600000 { Button("撤回", role: .destructive) { recallTarget = message } }
                 }
             }
@@ -322,7 +339,7 @@ struct ChatThreadView: View {
         let text = draft; sending = true
         Task {
             defer { sending = false }
-            do { try await chat.send(text, to: contact); if draft == text { draft = "" } }
+            do { try await chat.send(text, to: contact) { if draft == text { draft = "" } } }
             catch { chat.error = error.localizedDescription }
         }
     }
@@ -332,12 +349,10 @@ struct ChatThreadView: View {
     }
     private func markVisible(_ frames: [String: CGRect]) {
         readTask?.cancel()
-        guard phase == .active, chat.connected, search.isEmpty else { return }
-        let area = CGRect(origin: .zero, size: viewport)
-        guard let latest = rows.filter({ $0.recipient == chat.subject && $0.text != nil && $0.problem == nil && $0.status == "incoming" && (frames[$0.id]?.intersection(area).height ?? 0) > 16 })
-            .max(by: { (Int64($0.sequence) ?? 0) < (Int64($1.sequence) ?? 0) }), let seq = Int64(latest.sequence), seq > lastRead else { return }
+        guard let latest = ChatVisibleRead.latest(rows, frames: frames, viewport: viewport, owner: chat.subject, after: lastRead,
+            enabled: visible && phase == .active && chat.connected && search.isEmpty), let seq = Int64(latest.sequence) else { return }
         readTask = Task {
-            do { try await Task.sleep(nanoseconds: 400_000_000); try Task.checkCancellation(); try await chat.markRead(latest); lastRead = seq }
+            do { try await Task.sleep(nanoseconds: 400_000_000); try Task.checkCancellation(); if try await chat.markRead(latest) { lastRead = seq } }
             catch is CancellationError {} catch { chat.error = error.localizedDescription }
         }
     }
