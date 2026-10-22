@@ -168,6 +168,11 @@ final class ChatReviewTests: XCTestCase {
         try await f.chat.trust(f.inspection(remote))
         let recovered = try await f.c.store.get(ChatMessage.self, kind: "message", id: history.id)
         XCTAssertEqual(recovered?.text, "可信历史正文")
+        ChatReviewProtocol.handler = { _, stub in stub.respond(.object(["messages": .array([raw]), "has_more": .bool(false)])) }
+        _ = try await f.chat.loadOlder(f.conversation(), before: "2")
+        let afterPaging = try await f.c.store.get(ChatMessage.self, kind: "message", id: history.id)
+        XCTAssertEqual(afterPaging?.text, recovered?.text); XCTAssertEqual(afterPaging?.raw, recovered?.raw)
+        XCTAssertEqual(afterPaging?.validatedTargetDeviceID, oldRing.deviceID, "A network page must not overwrite an already-readable local archived envelope")
     }
 
     @MainActor func testTrustPreservesReadAndReceivedInMemoryAndDatabase() async throws {

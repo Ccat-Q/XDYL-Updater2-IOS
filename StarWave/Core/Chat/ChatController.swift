@@ -175,6 +175,11 @@ final class ChatController: ObservableObject {
                         history[index].text = nil; history[index].problem = "请重新核对联系人指纹；旧版本记录的历史公钥没有完整的核验来源。"
                         repairs.append(history[index])
                     }
+                    if history[index].sender == owner, let envelope = history[index].raw?["envelope"],
+                       envelope["protocol"]?.stringValue != "nu-chat-v1", (try? ring.verifiedOwnSender(envelope)) == nil {
+                        history[index].text = nil; history[index].problem = "无法验证本人发送设备的公钥，请从可信设备迁移或恢复密钥。"
+                        repairs.append(history[index])
+                    }
                     let oldID = history[index].clientID
                     history[index].associateLegacySend(owner: owner, deviceID: ring.deviceID)
                     if oldID != history[index].clientID { repairs.append(history[index]) }
@@ -339,8 +344,8 @@ final class ChatController: ObservableObject {
                 key = try c.ring.key(e.chatString("recipient_key_id"))
                 let senderKeyID = try e.chatString("sender_key_id")
                 if sender == c.subject {
-                    let own = try c.ring.key(senderKeyID)
-                    guard own.algorithm == key.algorithm, e["sender_public_key"] == nil || e["sender_public_key"]?.stringValue == own.publicKey else { throw ChatFailure.invalid("本人消息的发送公钥与本机可信钥环不符。") }
+                    let own = try c.ring.verifiedOwnSender(e)
+                    guard own.algorithm == key.algorithm else { throw ChatFailure.invalid("本人发送钥与目标算法不符。") }
                     remote = own.publicKey
                 }
                 else {

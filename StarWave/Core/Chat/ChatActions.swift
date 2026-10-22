@@ -193,7 +193,7 @@ extension ChatController {
         let result = try await json("/chat/v2/conversations/\(conv.id)/messages", query: query)
         try await localWrite(c) {
             let decoded = try result["messages"].chatArray().map { try decodeMessage($0, c: c) }
-            let changes = try await c.store.commit(events: [], messages: decoded, cursor: nil, owner: c.subject, deviceID: c.ring.deviceID)
+            let changes = try await c.store.commit(events: [], messages: decoded, cursor: nil, owner: c.subject, deviceID: c.ring.deviceID, preserveExisting: true)
             try await mergeCommitted(changes, c: c)
         }
         return result["has_more"]?.boolValue == true ? result["next_before"]?.stringValue : nil

@@ -130,9 +130,12 @@ struct ChatPendingSend: Codable, Identifiable {
               accepted.recipient == message.recipient, accepted.peerSubject == peerSubject else { return false }
         if path == "/chat/v2/legacy/messages" {
             if accepted.raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1" {
+                guard let cipher = body["cipher"]?.stringValue, !cipher.isEmpty,
+                      let keyID = body["sender_key_id"]?.stringValue, UUID(uuidString: keyID) != nil,
+                      deviceID == nil || accepted.raw?["sender_device_id"]?.stringValue == deviceID else { return false }
                 return accepted.clientID == id
-                && accepted.raw?["envelope"]?["cipher"] == body["cipher"]
-                && accepted.raw?["envelope"]?["own_key_id"] == body["sender_key_id"]
+                && accepted.raw?["envelope"]?["cipher"]?.stringValue == cipher
+                && accepted.raw?["envelope"]?["own_key_id"]?.stringValue == keyID
             }
             // The server strips envelopes from unavailable accepted messages.
             // Match only an exact current-device wire ID backed by our durable

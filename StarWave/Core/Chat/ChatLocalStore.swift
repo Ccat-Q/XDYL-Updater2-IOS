@@ -70,7 +70,7 @@ actor ChatLocalStore {
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw ChatFailure.storage }
     }
     @discardableResult
-    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?, owner: String? = nil, deviceID: String? = nil) throws -> [ChatMessage] {
+    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?, owner: String? = nil, deviceID: String? = nil, preserveExisting: Bool = false) throws -> [ChatMessage] {
         try execute("BEGIN IMMEDIATE")
         do {
             for event in events { try put(event, kind: "event", id: try event.chatSequence("event_seq")) }
@@ -89,6 +89,7 @@ actor ChatLocalStore {
                 }
                 if let old = try get(ChatMessage.self, kind: "message", id: message.id) {
                     if ["hidden", "recalled"].contains(old.status) { message = old }
+                    else if preserveExisting, !["hidden", "recalled"].contains(message.status) { message = old }
                     else if ["read", "received"].contains(old.status), message.status == "accepted" { message.status = old.status }
                 }
                 changed[message.id] = message

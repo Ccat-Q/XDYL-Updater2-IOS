@@ -21,6 +21,14 @@ struct ChatKeyRing: Codable {
     func key(_ id: String) throws -> ChatPrivateKey {
         guard let key = (keys + archiveKeys).first(where: { $0.keyID == id }) else { throw ChatFailure.invalid("此设备缺少解密所需的旧私钥，请从可信设备或加密备份恢复。") }; return key
     }
+    func verifiedOwnSender(_ envelope: JSONValue) throws -> ChatPrivateKey {
+        let sender = try key(envelope.chatString("sender_key_id"))
+        guard envelope["algorithm"]?.stringValue == sender.algorithm,
+              envelope["sender_public_key"] == nil || envelope["sender_public_key"]?.stringValue == sender.publicKey else {
+            throw ChatFailure.invalid("本人消息的发送公钥与本机可信钥环不符。")
+        }
+        return sender
+    }
     func mergingHistory(_ importedKeys: [ChatPrivateKey]) throws -> ChatKeyRing {
         var merged = self
         for imported in importedKeys {
