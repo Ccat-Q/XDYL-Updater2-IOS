@@ -95,14 +95,22 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var status: String
     var raw: JSONValue?
     var peerSubject: String
+    // Local provenance only; never populated from a relay envelope. Optional
+    // for older encrypted records and nu-chat-records/1 recovery packages.
+    var validatedTargetDeviceID: String? = nil
     var hasServerSequence: Bool { !id.hasPrefix("pending:") && UUID(uuidString: id) != nil && (Int64(sequence) ?? 0) > 0 && status != "pending" }
+    func legacyClientID(deviceID: String) -> String? {
+        guard raw?["sender_device_id"]?.stringValue == deviceID else { return nil }
+        let prefix = "v2:" + deviceID + ":"
+        let wireID = raw?["client_msg_id"]?.stringValue ?? clientID
+        guard wireID.hasPrefix(prefix) else { return nil }
+        let suffix = String(wireID.dropFirst(prefix.count))
+        return UUID(uuidString: suffix) != nil ? suffix : nil
+    }
     mutating func associateLegacySend(owner: String, deviceID: String) {
         guard sender == owner, hasServerSequence, raw?["sender_device_id"]?.stringValue == deviceID,
-              raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1" else { return }
-        let prefix = "v2:" + deviceID + ":"
-        guard clientID.hasPrefix(prefix) else { return }
-        let suffix = String(clientID.dropFirst(prefix.count))
-        guard UUID(uuidString: suffix) != nil else { return }
+              raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1",
+              let suffix = legacyClientID(deviceID: deviceID) else { return }
         clientID = suffix // raw retains the wire identity; V2 AAD is never changed.
     }
     var date: Date { Date(timeIntervalSince1970: Double(acceptedAt) / 1000) }
@@ -117,15 +125,28 @@ struct ChatPendingSend: Codable, Identifiable {
     let path: String
     let body: JSONValue
     var message: ChatMessage
-    func isAccepted(by accepted: ChatMessage) -> Bool {
-        guard accepted.hasServerSequence, accepted.clientID == id, accepted.sender == message.sender,
+    func isAccepted(by accepted: ChatMessage, deviceID: String? = nil) -> Bool {
+        guard accepted.hasServerSequence, accepted.sender == message.sender,
               accepted.recipient == message.recipient, accepted.peerSubject == peerSubject else { return false }
         if path == "/chat/v2/legacy/messages" {
-            return accepted.raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1"
+            if accepted.raw?["envelope"]?["protocol"]?.stringValue == "nu-chat-v1" {
+                return accepted.clientID == id
                 && accepted.raw?["envelope"]?["cipher"] == body["cipher"]
                 && accepted.raw?["envelope"]?["own_key_id"] == body["sender_key_id"]
+            }
+            // The server strips envelopes from unavailable accepted messages.
+            // Match only an exact current-device wire ID backed by our durable
+            // original legacy request, never by a deletion range or seq=0 row.
+            guard let deviceID, UUID(uuidString: deviceID) != nil,
+                  accepted.legacyClientID(deviceID: deviceID) == id,
+                  ["hidden", "recalled"].contains(accepted.raw?["unavailable"]?.stringValue ?? ""),
+                  accepted.raw?["envelope"] == nil,
+                  body["client_msg_id"]?.stringValue == id, message.clientID == id,
+                  UUID(uuidString: body["sender_key_id"]?.stringValue ?? "") != nil,
+                  let cipher = body["cipher"]?.stringValue, !cipher.isEmpty else { return false }
+            return true
         }
-        return path == "/chat/v2/messages"
+        return path == "/chat/v2/messages" && accepted.clientID == id
     }
 }
 

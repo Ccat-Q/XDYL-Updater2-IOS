@@ -37,12 +37,13 @@ extension ChatController {
         try await c.store.put(peer, kind: "peer", id: peer.subject); try current(c)
         peers.removeAll { $0.subject == peer.subject }; peers.append(peer)
         changedPeers.remove(inspection.subject)
-        var restored = messages
-        for i in restored.indices where restored[i].peerSubject == peer.subject {
-            if let raw = restored[i].raw { restored[i] = try decodeMessage(raw, c: c) }
+        var restored: [ChatMessage] = []
+        for message in try await c.store.all(ChatMessage.self, kind: "message") where message.peerSubject == peer.subject {
+            if let raw = message.raw { restored.append(try decodeMessage(raw, c: c, storedRecord: message)) }
         }
-        for message in restored { try await c.store.put(message, kind: "message", id: message.id) }
-        try current(c); messages = restored
+        try current(c)
+        let changes = try await c.store.commit(events: [], messages: restored, cursor: nil, owner: c.subject, deviceID: c.ring.deviceID)
+        try await mergeCommitted(changes, c: c)
         }
     }
     func saveContact(_ peer: ChatPeer) async throws {
@@ -114,8 +115,8 @@ extension ChatController {
                 if ["received", "read", "hidden", "recalled"].contains(synced.status) { message.status = synced.status; message.text = synced.text }
             }
             let cursor = try await c.store.get(String.self, kind: "state", id: "cursor")
-            try await c.store.commit(events: [], messages: [message], cursor: cursor)
-            try current(c); messages.removeAll { $0.id == pending.message.id || $0.id == message.id }; messages.append(message)
+            let changes = try await c.store.commit(events: [], messages: [message], cursor: cursor, owner: c.subject, deviceID: c.ring.deviceID)
+            try await mergeCommitted(changes, c: c)
             }
         } else {
             try await localWrite(c) {
@@ -191,11 +192,9 @@ extension ChatController {
         var query = [URLQueryItem(name: "limit", value: "100")]; if let before { query.append(URLQueryItem(name: "before", value: before)) }
         let result = try await json("/chat/v2/conversations/\(conv.id)/messages", query: query)
         try await localWrite(c) {
-        for event in try result["messages"].chatArray() {
-            let message = try decodeMessage(event, c: c)
-            // Do not turn a local/remote read back into accepted when paging.
-            if !messages.contains(where: { $0.id == message.id }) { try await c.store.put(message, kind: "message", id: message.id); try current(c); messages.append(message) }
-        }
+            let decoded = try result["messages"].chatArray().map { try decodeMessage($0, c: c) }
+            let changes = try await c.store.commit(events: [], messages: decoded, cursor: nil, owner: c.subject, deviceID: c.ring.deviceID)
+            try await mergeCommitted(changes, c: c)
         }
         return result["has_more"]?.boolValue == true ? result["next_before"]?.stringValue : nil
     }
@@ -218,14 +217,21 @@ extension ChatController {
         try vault.save(ring); suspend(); currentDeviceID = ring.deviceID; lifecycleRevision = UUID()
     }
     func clearLocal() async throws {
-        let c = try await connect()
-        try await localWrite(c) { try await c.store.clearLocalHistory(); try current(c); messages = []; pending = [] }
+        _ = try localStorage() // Resolve the exact account before invalidating IO.
+        let resumeForeground = foreground, flight = syncTask
+        suspend() // Reject delayed sync, paging, send and restore callbacks.
+        foreground = resumeForeground
+        defer { lifecycleRevision = UUID() }
+        try await localOnlyWrite { store, valid in
+            if let flight { _ = try? await flight.value }
+            try valid(); try await store.clearLocalHistory(); try valid()
+            messages = []; pending = []; status = "本机聊天历史已清除"
+        }
     }
     func discardPending(_ item: ChatPendingSend) async throws {
-        let c = try await connect()
-        try await localWrite(c) {
-        try await c.store.remove(kind: "pending", id: item.id); try await c.store.remove(kind: "message", id: item.message.id)
-        try current(c); pending.removeAll { $0.id == item.id }; messages.removeAll { $0.id == item.message.id }
+        try await localOnlyWrite { store, valid in
+        try await store.remove(kind: "pending", id: item.id); try await store.remove(kind: "message", id: item.message.id)
+        try valid(); pending.removeAll { $0.id == item.id }; messages.removeAll { $0.id == item.message.id }
         }
     }
 }

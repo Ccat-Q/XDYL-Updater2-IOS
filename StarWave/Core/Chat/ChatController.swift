@@ -161,6 +161,15 @@ final class ChatController: ObservableObject {
                 let contacts = try await store.all(ChatPeer.self, kind: "peer")
                 var repairs: [ChatMessage] = []
                 for index in history.indices {
+                    // Migrate local recipient provenance before quarantining
+                    // old contact trust. This does not authenticate the remote
+                    // sender: revalidation still requires explicitly pinned keys.
+                    if history[index].validatedTargetDeviceID == nil, history[index].text != nil, history[index].problem == nil,
+                       let envelope = history[index].raw?["envelope"], envelope["target_subject"]?.stringValue == owner,
+                       let target = envelope["target_device_id"]?.stringValue, UUID(uuidString: target) != nil,
+                       let keyID = envelope["recipient_key_id"]?.stringValue, (try? ring.key(keyID)) != nil {
+                        history[index].validatedTargetDeviceID = target; repairs.append(history[index])
+                    }
                     if history[index].sender != owner, history[index].raw != nil,
                        contacts.first(where: { $0.subject == history[index].peerSubject })?.trustVersion != 1 {
                         history[index].text = nil; history[index].problem = "请重新核对联系人指纹；旧版本记录的历史公钥没有完整的核验来源。"
@@ -174,7 +183,7 @@ final class ChatController: ObservableObject {
                 // accepted ciphertext, sender, recipient and device evidence.
                 let outbox = try await store.all(ChatPendingSend.self, kind: "pending")
                 repairs += history.filter { message in outbox.contains { $0.isAccepted(by: message) } }
-                if !repairs.isEmpty { try await store.commit(events: [], messages: repairs, cursor: nil) }
+                if !repairs.isEmpty { try await store.commit(events: [], messages: repairs, cursor: nil, owner: owner, deviceID: ring.deviceID) }
                 let pending = try await store.all(ChatPendingSend.self, kind: "pending")
                 let cached = try await store.get([ChatConversation].self, kind: "state", id: "conversations") ?? []
                 let retained = Set(pending.map { $0.message.id })
@@ -240,6 +249,28 @@ final class ChatController: ObservableObject {
         if let task = syncTask { try await task.value }
         try current(c); return try await action()
     }
+    /// Account-scoped local operations must not establish a relay connection.
+    /// Failed existing sync is drained, not required to succeed. The same lock
+    /// prevents a local edit from racing page commit or history restore.
+    func localOnlyWrite<T>(_ action: (ChatLocalStore, () throws -> Void) async throws -> T) async throws -> T {
+        let store = try localStorage(), stamp = ticket, ns = namespace, generation = sessionStore.generation
+        func valid() throws {
+            try Task.checkCancellation()
+            guard ticket == stamp, namespace == ns, mainGeneration == generation,
+                  sessionStore.generation == generation, enabled, sessionStore.isAuthenticated else { throw CancellationError() }
+        }
+        while localWriteInProgress { try await Task.sleep(nanoseconds: 10_000_000); try valid() }
+        localWriteInProgress = true; defer { localWriteInProgress = false }
+        if let flight = syncTask { _ = try? await flight.value }
+        try valid(); return try await action(store, valid)
+    }
+    func mergeCommitted(_ changes: [ChatMessage], c: ChatConnection) async throws {
+        let outbox = try await c.store.all(ChatPendingSend.self, kind: "pending"); try current(c)
+        pending = outbox
+        let ids = Set(changes.map(\.id)), retained = Set(outbox.map { $0.message.id })
+        messages.removeAll { ids.contains($0.id) || ($0.id.hasPrefix("pending:") && !retained.contains($0.id)) }
+        messages += changes
+    }
     private func syncPages(_ c: ChatConnection) async throws {
         try current(c)
         var cursor = try await c.store.get(String.self, kind: "state", id: "cursor")
@@ -263,14 +294,8 @@ final class ChatController: ObservableObject {
                 }
             }
             try current(c)
-            let changes = try await c.store.commit(events: events, messages: decoded, cursor: next, owner: c.subject)
-            try current(c)
-            pending = try await c.store.all(ChatPendingSend.self, kind: "pending")
-            if !changes.isEmpty {
-                let ids = Set(changes.map(\.id)), retained = Set(pending.map { $0.message.id })
-                messages.removeAll { ids.contains($0.id) || ($0.id.hasPrefix("pending:") && !retained.contains($0.id)) }
-                messages += changes
-            }
+            let changes = try await c.store.commit(events: events, messages: decoded, cursor: next, owner: c.subject, deviceID: c.ring.deviceID)
+            try await mergeCommitted(changes, c: c)
             try current(c)
             _ = try await c.transport.json("/chat/v2/sync/ack", token: c.token, method: "POST", body: .chatObject(["cursor": next]))
             try current(c); cursor = next
@@ -278,13 +303,19 @@ final class ChatController: ObservableObject {
         }
         try await refreshConversations(c)
     }
-    func decodeMessage(_ event: JSONValue, c: ChatConnection) throws -> ChatMessage {
+    func decodeMessage(_ event: JSONValue, c: ChatConnection, storedRecord: ChatMessage? = nil) throws -> ChatMessage {
         let sender = try event.chatString("sender_subject"), recipient = try event.chatString("recipient_subject")
         guard sender == c.subject || recipient == c.subject else { throw ChatFailure.invalid("拒绝保存不属于当前账号的消息。") }
         let peer = sender == c.subject ? recipient : sender
         var message = ChatMessage(id: try event.chatString("message_id"), clientID: try event.chatString("client_msg_id"), conversationID: try event.chatString("conversation_id"), sequence: try event.chatSequence("conversation_seq"), sender: sender, recipient: recipient, text: nil, problem: nil, acceptedAt: try event.chatInt64("accepted_at_ms"), status: sender == c.subject ? "accepted" : "incoming", raw: event, peerSubject: peer)
         message.associateLegacySend(owner: c.subject, deviceID: c.ring.deviceID)
-        if let unavailable = event["unavailable"]?.stringValue { message.status = unavailable == "recalled" ? "recalled" : "hidden"; message.raw = nil; return message }
+        if let unavailable = event["unavailable"]?.stringValue {
+            message.status = unavailable == "recalled" ? "recalled" : "hidden"
+            // Keep only wire identity until the store reconciles the outbox;
+            // the transaction removes raw before persisting the tombstone.
+            var identity = event.objectValue; identity["envelope"] = nil; message.raw = .object(identity)
+            return message
+        }
         do {
             guard let e = event["envelope"] else { throw ChatFailure.invalid("此设备没有消息密文。") }
             let remote: String, key: ChatPrivateKey
@@ -294,12 +325,23 @@ final class ChatController: ObservableObject {
                 try verifyRemote(peer: peer, keyID: ChatCrypto.legacyID(key.algorithm, remote), publicKey: remote)
                 message.text = try ChatCrypto.decryptLegacy(e.chatString("cipher"), key: key, remote: remote)
             } else {
-                guard e["target_subject"]?.stringValue == c.subject, e["target_device_id"]?.stringValue == c.ring.deviceID else { throw ChatFailure.invalid("消息密文不属于本设备。") }
+                let targetDevice = try e.chatString("target_device_id"), recipientKey = try e.chatString("recipient_key_id")
+                let localHistory = storedRecord.map {
+                    $0.raw == event && $0.id == message.id && $0.clientID == message.clientID && $0.conversationID == message.conversationID
+                        && $0.sender == sender && $0.recipient == recipient && $0.sequence == message.sequence && $0.peerSubject == peer
+                        && $0.hasServerSequence && !["hidden", "recalled"].contains($0.status)
+                        && ($0.validatedTargetDeviceID == targetDevice
+                            || ($0.text != nil && $0.problem == nil && c.ring.archiveKeys.contains(where: { $0.keyID == recipientKey })))
+                } ?? false
+                guard e["target_subject"]?.stringValue == c.subject,
+                      targetDevice == c.ring.deviceID || (localHistory && UUID(uuidString: targetDevice) != nil) else { throw ChatFailure.invalid("消息密文不属于本设备或可信本地历史。") }
+                if localHistory { message.validatedTargetDeviceID = targetDevice }
                 key = try c.ring.key(e.chatString("recipient_key_id"))
                 let senderKeyID = try e.chatString("sender_key_id")
                 if sender == c.subject {
-                    if let embedded = e["sender_public_key"]?.stringValue { remote = embedded }
-                    else { remote = try c.ring.key(senderKeyID).publicKey }
+                    let own = try c.ring.key(senderKeyID)
+                    guard own.algorithm == key.algorithm, e["sender_public_key"] == nil || e["sender_public_key"]?.stringValue == own.publicKey else { throw ChatFailure.invalid("本人消息的发送公钥与本机可信钥环不符。") }
+                    remote = own.publicKey
                 }
                 else {
                     remote = e["sender_public_key"]?.stringValue ?? peers.first(where: { $0.subject == peer })?.trustedKeys[senderKeyID] ?? ""
@@ -308,8 +350,13 @@ final class ChatController: ObservableObject {
                 var metadata = e.objectValue
                 for k in ["sender_subject", "sender_device_id", "recipient_subject", "client_msg_id"] { metadata[k] = event[k] }
                 message.text = try ChatCrypto.decrypt(key: key, remote: remote, metadata: .object(metadata), nonce: e.chatString("nonce"), ciphertext: e.chatString("ciphertext"))
+                message.validatedTargetDeviceID = targetDevice
             }
-        } catch { message.problem = "无法解密：请核对并信任联系人密钥，或从旧设备恢复所需私钥。" }
+        } catch {
+            message.problem = sender == c.subject
+                ? "无法验证或解密本人设备的消息：请从可信设备迁移或恢复私钥；不会自动信任消息附带的公钥。"
+                : "无法解密：请核对并信任联系人密钥，或从旧设备恢复所需私钥。"
+        }
         return message
     }
     private func verifyRemote(peer: String, keyID: String, publicKey: String) throws {

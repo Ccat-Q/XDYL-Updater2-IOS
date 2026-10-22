@@ -70,12 +70,23 @@ actor ChatLocalStore {
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw ChatFailure.storage }
     }
     @discardableResult
-    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?, owner: String? = nil) throws -> [ChatMessage] {
+    func commit(events: [JSONValue], messages: [ChatMessage], cursor: String?, owner: String? = nil, deviceID: String? = nil) throws -> [ChatMessage] {
         try execute("BEGIN IMMEDIATE")
         do {
             for event in events { try put(event, kind: "event", id: try event.chatSequence("event_seq")) }
             var changed: [String: ChatMessage] = [:]
+            // Capture acceptance before merging tombstones or clearing raw.
+            // Receipt/deletion events must not erase the only outbox evidence.
+            var acceptedPending: [String: ChatPendingSend] = [:]
             for var message in messages {
+                var candidateIDs = [message.clientID]
+                if let deviceID, let id = message.legacyClientID(deviceID: deviceID) { candidateIDs.append(id) }
+                for id in candidateIDs {
+                    if let pending = try get(ChatPendingSend.self, kind: "pending", id: id), pending.isAccepted(by: message, deviceID: deviceID) {
+                        acceptedPending[pending.id] = pending
+                        if pending.path == "/chat/v2/legacy/messages" { message.clientID = pending.id }
+                    }
+                }
                 if let old = try get(ChatMessage.self, kind: "message", id: message.id) {
                     if ["hidden", "recalled"].contains(old.status) { message = old }
                     else if ["read", "received"].contains(old.status), message.status == "accepted" { message.status = old.status }
@@ -113,11 +124,12 @@ actor ChatLocalStore {
                 if message.hasServerSequence, !ChatHistoryFilter.allows(message, filters: filters), !["hidden", "recalled"].contains(message.status) {
                     message.text = nil; message.raw = nil; message.problem = nil; message.status = "hidden"
                 }
+                if ["hidden", "recalled"].contains(message.status) { message.text = nil; message.raw = nil; message.problem = nil }
                 changed[message.id] = message
                 if try get(ChatMessage.self, kind: "message", id: message.id) != message { try put(message, kind: "message", id: message.id) }
-                if let pending = try get(ChatPendingSend.self, kind: "pending", id: message.clientID), pending.isAccepted(by: message) {
-                    try remove(kind: "pending", id: pending.id); try remove(kind: "message", id: pending.message.id)
-                }
+            }
+            for pending in acceptedPending.values {
+                try remove(kind: "pending", id: pending.id); try remove(kind: "message", id: pending.message.id)
             }
             if let cursor, try get(String.self, kind: "state", id: "cursor") != cursor { try put(cursor, kind: "state", id: "cursor") }
             try execute("COMMIT")
