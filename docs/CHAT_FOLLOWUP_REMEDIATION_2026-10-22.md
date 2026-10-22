@@ -32,6 +32,15 @@
 
 ## 验证记录
 
-新增8个XCTest方法（含上述组合与反向校验），复用隔离的加密SQLite、测试密钥存储和合成URLProtocol，不使用真实账号或生产消息。当前尚待本轮Actions执行iOS16/26编译、全部XCTest、输入栏预览及IPA归档；不以2.3.1的160项通过代替本轮验证。
+源码`7841d5919360d99caf75050be43a84d99ef0e5a9`的[Actions 39816117287](https://github.com/Ccat-Q/XDYL-Updater2-IOS/actions/runs/39816117287)两个任务均成功：
+
+- Xcode26.6编译，iPhone17 Pro模拟器实际运行**168项XCTest、0失败**。其中ChatReviewTests为21项，含本轮新增8项以及原有13项；六种Legacy接受/删除组合、三类分页删除过滤和反向校验均在这些方法中执行，没有跳过来替代修复。
+- Xcode16.4完成iOS16兼容编译；Release archive、IPA打包与上传成功。新测试复用隔离加密SQLite、测试密钥存储和合成URLProtocol，不使用真实账号或生产消息，不放宽正式Keychain策略。
+- 本轮四张320点输入栏预览已下载并人工打开检查，浅色、深色、实色及无障碍大字体均正常渲染，未见文字裁切。不以静态截图替代真机键盘、滚动或触控验收。
+- 离线API文档检查及`git diff --check`通过；这不证明线上接口、真实互聊或生产备份可用。
+
+已下载Actions的`StarWave-resignable`产物到本机`artifacts/ios-chat-2.3.2-run-39816117287/`，ZIP完整性及附带SHA-256校验通过。包内`com.ccatq.xdylupdater2`、版本**2.3.2（1）**、最低iOS16.0；SHA-256为`7e912a20cbe005f71dc48a5388848a947fbc61de7672b1e1b24920291d814034`。IPA仍需用户自行签名安装。
+
+上述结果属于2.3.2，不以2.3.1的160项通过代替本轮验证；没有创建Release或版本标签。仍需真实账号、双方设备、前后台/断网切换及可信备份恢复验收，本轮没有接触生产聊天数据。
 
 参阅：[iOS私聊说明](IOS_CHAT.md)、[上一轮13项修复](CHAT_REMEDIATION_2026-10-21.md)、[软件许可审计](IOS_SOURCE_LICENSE_AUDIT_2026-10-21.md)。
