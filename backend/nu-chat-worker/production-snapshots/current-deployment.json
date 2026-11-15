@@ -1,0 +1,43 @@
+{
+  "verified_at_utc": "2026-11-15T11:26:53.583413+00:00",
+  "worker": "nu-chat",
+  "environment": "production",
+  "deployment_id": "16ddbfc4-c691-459c-8f3b-3ae86028f062",
+  "active_version": "7fbc42eb-f859-4ee7-a01b-d402ee9b062e",
+  "previous_version": "991deea7-e80b-45fb-8d6b-be7d986c8d0c",
+  "percentage": 100,
+  "artifact_commit": "61765f410e4c6b0c9328860becfba7140dd77d5c",
+  "artifact_sha256": "bad39394dc2106a761c77cd112b5603fc7ddd6b536af12152d008830854b7c9a",
+  "deployed_bundle_matches_actions": true,
+  "bindings_and_secrets_preserved": true,
+  "runtime_settings_preserved": true,
+  "public_readonly_smoke": [
+    {
+      "path": "/iOS/chat/v2/capabilities",
+      "status": 200
+    },
+    {
+      "path": "/Android/chat/ping",
+      "status": 200
+    }
+  ],
+  "database_writes_or_migrations_performed": false,
+  "existing_messages_rewritten": false,
+  "artifact_run_id": 43706996142,
+  "source_modules_match_actions": true,
+  "source_hashes": {
+    "src/common.js": "7caacc2a3f8a8a34efb03de75a711bec45ecfd6f511c5dc4482f8b3058d57821",
+    "src/store.js": "49279382e0e8eb1f1ec12cb989fa44fc7726b0f640cb41cd56701b4ce3363643",
+    "src/cursor.js": "1c9822ab58886b99f3bb4f6669425589dd4c2f5d8e1dedea6b54b03274f7765e",
+    "src/social.js": "9ce73d782da0013ccb4986f5d1ff045b1615a81fefce26a2fa0c2fdd019d26a2",
+    "src/notifications.js": "3f4948bf37a4f52ffd635d74069b004a10ac27062a2d96248161d921ccd32e7e",
+    "src/bark.js": "fa459bf3d487ac08e31432219d96978c5b606f69cc54013bc631eacbb4265a40",
+    "src/recovery.js": "a2bcb9dbe86f54448bd4279ca7c5ea422c726f8d79fa1e2d82fbf9c9f0eaec9c",
+    "src/android.js": "77f359d883f9bf0b269e594054429c924cbf44d6d934cabf96812746518e1adb",
+    "src/v2.js": "ce1385612bb621769dbaa86e3b3b2709b6f34aa474faadda422e4187b090a548",
+    "src/legacy.js": "47633907caacb9bbfa88dc5f94be19067b254248e781f16a2beab85efa7b8bcb",
+    "src/index.js": "f39ea4773170c0c3d9b6441c730d66f8c874e43e75ae45f54ac310229a4ee209"
+  },
+  "production_secrets_exported": false,
+  "rollback_version_available": "991deea7-e80b-45fb-8d6b-be7d986c8d0c"
+}

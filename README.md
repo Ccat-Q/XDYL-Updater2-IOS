@@ -39,4 +39,6 @@ GitHub Actions 将模拟器 XCTest、真机 IPA 归档和 iOS 16 兼容编译拆
 
 完整已知接口、请求/返回体、用途与鉴权见 [API 接口手册](docs/api/README.md)；历史兼容决策见 [API compatibility](docs/api/API_COMPATIBILITY.md)。
 
-已加入[iOS文字私聊客户端](docs/IOS_CHAT.md)。2.3.1完成[审查修复和Liquid Glass输入栏](docs/CHAT_REMEDIATION_2026-10-21.md)；2.3.2修复[后续报告的6项问题](docs/CHAT_FOLLOWUP_REMEDIATION_2026-10-22.md)，iOS16/26编译、168项XCTest与IPA归档通过，输入栏四种预览已人工检查。独立[聊天后端](backend/nu-chat-worker/README.md)的既有[部署记录](docs/CHAT_DEPLOYMENT_2026-10-19.md)中R2尚未开通；本轮只修iOS，不核查或调整后端。真实账号、安卓/iOS互聊及Bark真机提醒仍待验收，详见[验收边界](docs/CHAT_SERVER_REMEDIATION.md)。
+2026-11-15：新增[独立聊天诊断页](docs/CHAT_DIAGNOSTICS.md)，诊断版源码 `f5659c2` 已通过 iOS16/26 编译、246 项 XCTest；版本号仍为 2.3.2，通过页面源码 revision 区分实际构建。已核对并同步真实生产 Worker，随后按授权[部署共同曲线兼容修复](docs/CHAT_SERVER_SYNC_2026-11-15.md)，保留原绑定与数据。诊断包在 Actions artifact，未创建新版本标签或替换历史 Release。
+
+以下为 2026-10-22 历史验收：已加入[iOS文字私聊客户端](docs/IOS_CHAT.md)。2.3.1完成[审查修复和Liquid Glass输入栏](docs/CHAT_REMEDIATION_2026-10-21.md)；2.3.2修复[后续报告的6项问题](docs/CHAT_FOLLOWUP_REMEDIATION_2026-10-22.md)，iOS16/26编译、168项XCTest与IPA归档通过，输入栏四种预览已人工检查。独立[聊天后端](backend/nu-chat-worker/README.md)的既有[部署记录](docs/CHAT_DEPLOYMENT_2026-10-19.md)中R2尚未开通；本轮只修iOS，不核查或调整后端。真实账号、安卓/iOS互聊及Bark真机提醒仍待验收，详见[验收边界](docs/CHAT_SERVER_REMEDIATION.md)。

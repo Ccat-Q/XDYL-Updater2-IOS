@@ -1,6 +1,6 @@
 # NU Chat Worker
 
-2026-11-15：已从 Cloudflare 实际 production content/Source Map 同步源码，保留[原始模块快照与版本哈希](production-snapshots/2026-11-15T094436Z/manifest.json)。工作源码另有一项**未部署**的共同曲线选钥修复；原样快照和本地修复在合成测试中分别复现错误/成功，详见[同步记录](../../docs/CHAT_SERVER_SYNC_2026-11-15.md)。新增设备登记、私钥加密备份路由与本地迁移 0005；本轮没有部署或写入生产数据库。
+2026-11-15：已从 Cloudflare 实际 production content/Source Map 同步源码，保留[原始模块快照与版本哈希](production-snapshots/2026-11-15T094436Z/manifest.json)。工作源码另有一项共同曲线选钥修复，随后已获用户授权部署到线上；原样快照和修复源码在合成测试中分别复现错误/成功，详见[同步与部署记录](../../docs/CHAT_SERVER_SYNC_2026-11-15.md)及[验收凭据](production-snapshots/current-deployment.json)。新增设备登记、私钥加密备份路由与本地迁移 0005；没有执行生产数据库写入或迁移。
 
 2026-10-19 部署状态：[核心已部署到nu-pe-chat.cc.cd，R2待开通](../../docs/CHAT_DEPLOYMENT_2026-10-19.md)。工程位于 `/root/nu-chat/backend/nu-chat-worker`，旧Node服务文件保持不变；生产使用 `wrangler.production.jsonc`，下方 `wrangler.jsonc` 仍是通用模板。未做真实账号/跨端/Bark真机联调。
 
