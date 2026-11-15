@@ -1,0 +1,36 @@
+name: Worker artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tested-artifact:
+    name: Test and build deployable Worker artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend/nu-chat-worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/nu-chat-worker/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run all Worker regressions before building
+        run: npm test
+      - name: Build versioned deployable artifact without production credentials
+        run: node scripts/build-artifact.mjs
+      - name: Upload tested Worker bundle and integrity manifest
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: nu-chat-worker-tested
+          path: ${{ runner.temp }}/nu-chat-worker-build
+          if-no-files-found: error
+          retention-days: 14

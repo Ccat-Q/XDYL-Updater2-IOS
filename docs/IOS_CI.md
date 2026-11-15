@@ -44,6 +44,10 @@ IPA artifact 可由独立归档 Job 先完成上传，但不代表测试验收�
 
 默认 Job 只有 `contents: read`；只有受门禁保护的发布 Job 获得 `contents: write`。测试结果与截图保留独立 artifact，便于确认真正执行的测试数量及失败原因。
 
+## 单独生成可部署 Worker 产物
+
+手动运行 `Worker artifact` 工作流，会先在 Linux Actions 重跑完整 Worker 回归，再用锁定 esbuild 版本生成 bundle、Source Map 和 SHA-256/source hash manifest，上传 `nu-chat-worker-tested`。构建脚本拒绝在非 Actions 环境编译，也不读取 Cloudflare 凭据。该工作流不自动部署；生产部署必须另获授权，核对实际域名/Worker/旧版本并保留现有绑定和秘密值。
+
 ## 验证
 
 - 本地仅运行 YAML 解析、工作流依赖/缓存分区断言、`bash -n`、`git diff --check` 和文档检查，不运行 iOS 编译。
