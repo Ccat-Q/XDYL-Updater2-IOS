@@ -616,7 +616,7 @@ final class ChatReviewTests: XCTestCase {
 
     @MainActor func testHistorySnapshotRejectsUnresolvedRotationCandidate() async throws {
         let f = try ChatReviewFixture(); defer { f.clean() }
-        f.chat.features.insert("history_filters")
+        f.chat.features.formUnion(["history_filters", "encrypted_backups"])
         try f.chat.keyVaultFactory(f.c.namespace).save(f.c.ring.stagingRotation())
         var filtersRead = 0
         ChatReviewProtocol.handler = { request, stub in
@@ -624,8 +624,9 @@ final class ChatReviewTests: XCTestCase {
             filtersRead += 1
             stub.respond(.object(["revision": .string("1"), "filters": .array([]), "has_more": .bool(false)]))
         }
-        do { _ = try await f.chat.prepareHistory(kind: "backup"); XCTFail("Unreconciled candidate cannot produce a stale backup") } catch {}
-        XCTAssertEqual(filtersRead, 1); XCTAssertNil(f.chat.preparedPack)
+        do { _ = try await f.chat.prepareBackup(); XCTFail("Unreconciled candidate cannot produce a stale backup") } catch {}
+        let prepared = try await f.c.store.all(ChatPreparedPack.self, kind: "preparedHistory")
+        XCTAssertEqual(filtersRead, 1); XCTAssertTrue(prepared.isEmpty)
         XCTAssertNotNil(try f.chat.keyVaultFactory(f.c.namespace).load()?.pendingRotation)
     }
 
