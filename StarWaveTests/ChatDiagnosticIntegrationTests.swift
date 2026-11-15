@@ -364,7 +364,7 @@ final class ChatDiagnosticIntegrationTests: XCTestCase {
         let remote = try XCTUnwrap(ChatCrypto.newKeys().first { $0.algorithm == "P256" })
         DiagnosticTestProtocol.handler = { request, stub in
             switch request.url!.path {
-            case "/chat/v2/users/bob/protocols": stub.respond(.object(["subject": .string("account:2"), "username": .string("bob"), "protocols": .array([.string("nu-chat-v1")]), "legacy": .object(["public_keys": .chatObject(["P256": remote.publicKey])])]))
+            case "/chat/v2/users/bob/protocols": stub.respond(.object(["subject": .string("account:2"), "username": .string("bob"), "protocols": .array([.string("nu-chat-v1")]), "legacy_public_keys": .array([.chatObject(["algorithm": "P256", "public_key": remote.publicKey])])]))
             case "/chat/v2/devices/" + f.c.ring.deviceID + "/legacy": stub.respond(.object(["enabled": .bool(true), "device_id": .string(f.c.ring.deviceID)]))
             case "/chat/v2/legacy/messages": stub.respond(.chatObject(["seq": "1"]))
             case "/chat/v2/sync": stub.respond(.object(["events": .array([]), "next_cursor": .string("safe-cursor"), "has_more": .bool(false)]))
@@ -374,6 +374,9 @@ final class ChatDiagnosticIntegrationTests: XCTestCase {
             }
         }
         let inspected = try await f.chat.inspectPeer("bob")
+        XCTAssertTrue(inspected.legacy["P256"] == remote.publicKey)
+        XCTAssertTrue(inspected.publicKeys[ChatCrypto.legacyID("P256", remote.publicKey)] == remote.publicKey)
+        XCTAssertNil(inspected.native)
         try await f.chat.trust(inspected, mode: .legacy)
         let peer = try XCTUnwrap(f.chat.peers.first)
         f.chat.diagnostics.clear()
