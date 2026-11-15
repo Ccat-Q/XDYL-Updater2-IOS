@@ -84,6 +84,9 @@ CHAT_ANDROID_OPERATIONS = {
     ("GET", "/chat/read"), ("GET", "/chat/v2/devices/{device_id}/legacy"),
     ("POST", "/chat/v2/devices/{device_id}/legacy"),
     ("GET", "/chat/v2/users/{username}/protocols"), ("POST", "/chat/v2/legacy/messages"),
+    ("POST", "/chat/device/register"), ("GET", "/chat/key-backup"),
+    ("POST", "/chat/key-backup"), ("PUT", "/chat/key-backup"),
+    ("DELETE", "/chat/key-backup"), ("POST", "/chat/key-backup/lookup"),
 }
 
 

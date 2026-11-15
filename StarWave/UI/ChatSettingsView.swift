@@ -15,6 +15,7 @@ struct ChatSettingsView: View {
                         Text(chat.relayText).font(.footnote).textSelection(.enabled)
                         NavigationLink("接收权限、已读与保留期") { ChatPrivacyView() }
                         NavigationLink("聊天设备与公钥") { ChatDevicesView() }
+                        NavigationLink("本机脱敏诊断") { diagnosticsDestination }
                         NavigationLink("屏蔽列表") { ChatBlocksView() }
                     }
                     Section("提醒") {
@@ -48,6 +49,13 @@ struct ChatSettingsView: View {
             }
         }
         .navigationTitle("私聊设置")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink { diagnosticsDestination } label: {
+                    Label("诊断", systemImage: "stethoscope")
+                }.accessibilityLabel("打开本机脱敏诊断")
+            }
+        }
         .alert("停用私聊？", isPresented: $confirmDisable) {
             Button("取消", role: .cancel) {}; Button("停用", role: .destructive) { chat.setEnabled(false) }
         } message: { Text("立即停止聊天请求并隐藏历史。不会删除私钥或服务器设备；Bark 绑定需另行停用或解绑。更换中继后必须重新同意。") }
@@ -58,6 +66,9 @@ struct ChatSettingsView: View {
             Button("取消", role: .cancel) { pendingDelete = nil }
             Button("移除", role: .destructive) { if let item = pendingDelete { Task { await chat.perform { try await chat.discardPending(item) } } }; pendingDelete = nil }
         } message: { Text("这不是服务端撤回。若此前已被接受，消息仍可能送达并在后续同步出现。") }
+    }
+    private var diagnosticsDestination: some View {
+        ChatDiagnosticsView(diagnostics: chat.diagnostics, refreshSnapshot: { chat.captureDiagnosticSnapshot() })
     }
 }
 

@@ -41,6 +41,9 @@ export async function legacySend(db,env,from,b,now,authGuard=null,sourceKeyId=nu
     if(!key)fail(409,'KEYSET_CHANGED');selected=await legacyPeer(db,from,key.algorithm);
     if(selected.key_id!==sourceKeyId)fail(409,'KEYSET_CHANGED');
   }
+  // Local compatibility fix relative to the preserved production snapshot:
+  // ECDH requires matching curves. Select the same recipient curve that the
+  // authenticated key lookup returned; its default may use another curve.
   const recipient=await legacyPeer(db,b.to,selected.algorithm);
   if(b.recipient_public_key!==undefined&&b.recipient_public_key!==recipient.public_key)fail(409,'KEYSET_CHANGED');
   const algorithm=selected.algorithm;

@@ -1,5 +1,7 @@
 # NU Chat Worker
 
+2026-11-15：已从 Cloudflare 实际 production content/Source Map 同步源码，保留[原始模块快照与版本哈希](production-snapshots/2026-11-15T094436Z/manifest.json)。工作源码另有一项**未部署**的共同曲线选钥修复；原样快照和本地修复在合成测试中分别复现错误/成功，详见[同步记录](../../docs/CHAT_SERVER_SYNC_2026-11-15.md)。新增设备登记、私钥加密备份路由与本地迁移 0005；本轮没有部署或写入生产数据库。
+
 2026-10-19 部署状态：[核心已部署到nu-pe-chat.cc.cd，R2待开通](../../docs/CHAT_DEPLOYMENT_2026-10-19.md)。工程位于 `/root/nu-chat/backend/nu-chat-worker`，旧Node服务文件保持不变；生产使用 `wrangler.production.jsonc`，下方 `wrangler.jsonc` 仍是通用模板。未做真实账号/跨端/Bark真机联调。
 
 源于用户提供的 `nu-chat-worker.7z`，修正其 D1 代码与 KV 配置不一致的问题。保留经过加固的安卓 `/chat/*`，新增独立 `/chat/v2/*`。没有真实账号或 Bark 凭据进入测试，没有修改外部安卓仓库；本项目后续已加入[iOS 2.3.0客户端](../../docs/IOS_CHAT.md)。
@@ -21,7 +23,7 @@ WRANGLER_LOG_PATH=/tmp/nu-chat-wrangler.log WRANGLER_SEND_METRICS=false npm run 
 ## 通用部署步骤
 
 1. 单独创建 D1 和**私有** R2 bucket，替换 `wrangler.jsonc` 的 D1 ID；R2 不开公共域名，不把历史对象暴露为静态资源。评估请求量、存储和费用后再配置部署账号与域名。
-2. 审阅已有 D1 schema，记录服务端恢复点；仅在明确获准时导出完整数据。先在隔离库依次运行 `0001` 至 `0004` migrations，确认旧消息自增 seq 保留，再手动迁移。此生产实例已迁移，勿重复直接执行ALTER SQL；使用Wrangler migration tracker。不要把模板ID当作可部署配置。
+2. 审阅已有 D1 schema，记录服务端恢复点；仅在明确获准时导出完整数据。先在隔离库依次运行 `0001` 至 `0005` migrations，确认旧消息自增 seq 保留，再手动迁移。此生产实例已迁移，勿重复直接执行ALTER SQL；使用Wrangler migration tracker。不要把模板ID当作可部署配置。
 3. 用密码学随机源各生成独立 32 字节、标准 Base64 的 `CURSOR_SECRET`、`BARK_ENCRYPTION_KEY`，手动通过 `wrangler secret put` 设置，不写入 Git、文档或日志。游标签名密钥更换会使旧游标失效；Bark 加密密钥更换需要重新绑定，不直接覆盖后假装旧绑定有效。
 4. Bark 默认硬关闭 `BARK_ENABLED=false`；只有显式设为字符串 `true` 且加密密钥有效才开放。只支持官方 `https://api.day.app/push`，不支持自建地址。每个聊天设备一个可替换、可停用/删除的 Bark key。
 5. 可选 `HISTORY_MAX_PACK_BYTES`（默认 100 MiB，上限 1 GiB）、`HISTORY_ACCOUNT_BYTES`（默认 500 MiB，必须 ≥ 单包限制）、`HISTORY_MAX_UPLOADS`（默认 2，可配置 1–10）。分块固定 **1 MiB 密文**；最后一块可短。备份 30 天、迁移包 24 小时、批准窗口 10 分钟，均不因访问续期。

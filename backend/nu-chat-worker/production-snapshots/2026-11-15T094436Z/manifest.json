@@ -1,0 +1,70 @@
+{
+  "captured_at_utc": "2026-11-15T10:10:51.082645+00:00",
+  "source": "Cloudflare production service content and embedded sourcesContent; not a local checkout",
+  "worker": "nu-chat",
+  "environment": "production",
+  "deployment_id": "b25e4c58-614b-4542-afc9-66319c50a1fc",
+  "deployed_at_utc": "2026-11-15T09:44:36.616762Z",
+  "versions": [
+    {
+      "version_id": "991deea7-e80b-45fb-8d6b-be7d986c8d0c",
+      "percentage": 100
+    }
+  ],
+  "bundle_sha256": "1aedbfd978e73da7665917c89e6da359fb929d452974a8e3b2782daf9e709ad0",
+  "source_map_sha256": "cf3d8dffde0e95623d202f4a3154ae87d7e55012750badfcfc044750bb4d2a6e",
+  "modules": [
+    {
+      "path": "src/common.js",
+      "sha256": "7caacc2a3f8a8a34efb03de75a711bec45ecfd6f511c5dc4482f8b3058d57821"
+    },
+    {
+      "path": "src/store.js",
+      "sha256": "49279382e0e8eb1f1ec12cb989fa44fc7726b0f640cb41cd56701b4ce3363643"
+    },
+    {
+      "path": "src/cursor.js",
+      "sha256": "1c9822ab58886b99f3bb4f6669425589dd4c2f5d8e1dedea6b54b03274f7765e"
+    },
+    {
+      "path": "src/social.js",
+      "sha256": "9ce73d782da0013ccb4986f5d1ff045b1615a81fefce26a2fa0c2fdd019d26a2"
+    },
+    {
+      "path": "src/notifications.js",
+      "sha256": "3f4948bf37a4f52ffd635d74069b004a10ac27062a2d96248161d921ccd32e7e"
+    },
+    {
+      "path": "src/bark.js",
+      "sha256": "fa459bf3d487ac08e31432219d96978c5b606f69cc54013bc631eacbb4265a40"
+    },
+    {
+      "path": "src/recovery.js",
+      "sha256": "a2bcb9dbe86f54448bd4279ca7c5ea422c726f8d79fa1e2d82fbf9c9f0eaec9c"
+    },
+    {
+      "path": "src/android.js",
+      "sha256": "d7128691e04cbd548024a25be5dcc059d443cdfb2be57f8571c469b1fb2c8660"
+    },
+    {
+      "path": "src/v2.js",
+      "sha256": "ce1385612bb621769dbaa86e3b3b2709b6f34aa474faadda422e4187b090a548"
+    },
+    {
+      "path": "src/legacy.js",
+      "sha256": "47633907caacb9bbfa88dc5f94be19067b254248e781f16a2beab85efa7b8bcb"
+    },
+    {
+      "path": "src/index.js",
+      "sha256": "f39ea4773170c0c3d9b6441c730d66f8c874e43e75ae45f54ac310229a4ee209"
+    }
+  ],
+  "working_tree_deviations": [
+    {
+      "path": "src/android.js",
+      "reason": "Workspace restores matching ECDH curve selection; deployed snapshot is preserved unchanged. No production deployment performed."
+    }
+  ],
+  "secrets_included": false,
+  "message_data_included": false
+}

@@ -103,6 +103,21 @@ struct ChatKeyRing: Codable {
     }
 }
 
+// Diagnostic events contain enums only: never attach keys, payloads or errors.
+enum ChatCryptoStage: Equatable {
+    case cipherFormat, keyAgreement, keyDerivation, authenticatedCipher, plaintextValidation
+}
+enum ChatCryptoOutcome: Equatable { case started, succeeded, failed }
+enum ChatCryptoFailure: Equatable {
+    case cipherFormatInvalid, peerKeyInvalid, ownKeyInvalid, keyAgreementFailed
+    case aeadAuthenticationFailed, plaintextInvalid, cryptoFailed
+}
+struct ChatCryptoTrace: Equatable {
+    let stage: ChatCryptoStage
+    let outcome: ChatCryptoOutcome
+    let failure: ChatCryptoFailure?
+}
+
 enum ChatCrypto {
     static func random(_ count: Int) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
@@ -126,54 +141,145 @@ enum ChatCrypto {
     static func decoded(_ string: String, maximum: Int) throws -> Data {
         guard let data = Data(base64Encoded: string), data.count <= maximum, data.base64EncodedString() == string else { throw ChatFailure.invalid("聊天加密材料无效。") }; return data
     }
-    static func shared(privateKey: ChatPrivateKey, remote: String) throws -> SharedSecret {
-        let bytes = try decoded(remote, maximum: 1024)
-        switch privateKey.algorithm {
-        case "X25519":
-            guard bytes.count == 44, bytes.starts(with: xPrefix) else { throw ChatFailure.invalid("X25519 公钥格式错误。") }
-            let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKey.privateData)
-            return try key.sharedSecretFromKeyAgreement(with: Curve25519.KeyAgreement.PublicKey(rawRepresentation: bytes.dropFirst(12)))
-        case "P256":
-            return try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKey.privateData).sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(derRepresentation: bytes))
-        default: throw ChatFailure.invalid("未知聊天算法。")
+    /// nil means the private key/algorithm cannot be imported. No key leaves this helper.
+    static func publicPairMatches(_ key: ChatPrivateKey) -> Bool? {
+        do {
+            let derived: String
+            switch key.algorithm {
+            case "X25519":
+                derived = (xPrefix + (try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: key.privateData)).publicKey.rawRepresentation).base64EncodedString()
+            case "P256":
+                derived = (try P256.KeyAgreement.PrivateKey(rawRepresentation: key.privateData)).publicKey.derRepresentation.base64EncodedString()
+            default: return nil
+            }
+            return derived == key.publicKey
+        } catch { return nil }
+    }
+    private static func emit(_ stage: ChatCryptoStage, _ outcome: ChatCryptoOutcome, _ failure: ChatCryptoFailure? = nil, trace: ((ChatCryptoTrace) -> Void)?) {
+        trace?(ChatCryptoTrace(stage: stage, outcome: outcome, failure: failure))
+    }
+    private static func traced<T>(_ stage: ChatCryptoStage, trace: ((ChatCryptoTrace) -> Void)?, failure: (Error) -> ChatCryptoFailure, _ operation: () throws -> T) throws -> T {
+        emit(stage, .started, trace: trace)
+        do {
+            let result = try operation()
+            emit(stage, .succeeded, trace: trace)
+            return result
+        } catch {
+            emit(stage, .failed, failure(error), trace: trace)
+            throw error
         }
+    }
+    private static func authenticatedFailure(_ error: Error) -> ChatCryptoFailure {
+        if let cryptoError = error as? CryptoKitError, case .authenticationFailure = cryptoError {
+            return .aeadAuthenticationFailed
+        }
+        return .cryptoFailed
+    }
+    static func shared(privateKey: ChatPrivateKey, remote: String, trace: ((ChatCryptoTrace) -> Void)? = nil) throws -> SharedSecret {
+        emit(.keyAgreement, .started, trace: trace)
+        var failure: ChatCryptoFailure = .peerKeyInvalid
+        do {
+            let bytes = try decoded(remote, maximum: 1024)
+            let secret: SharedSecret
+            switch privateKey.algorithm {
+            case "X25519":
+                guard bytes.count == 44, bytes.starts(with: xPrefix) else { throw ChatFailure.invalid("X25519 公钥格式错误。") }
+                failure = .ownKeyInvalid
+                let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKey.privateData)
+                failure = .peerKeyInvalid
+                let peer = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: bytes.dropFirst(12))
+                failure = .keyAgreementFailed
+                secret = try key.sharedSecretFromKeyAgreement(with: peer)
+            case "P256":
+                failure = .ownKeyInvalid
+                let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKey.privateData)
+                failure = .peerKeyInvalid
+                let peer = try P256.KeyAgreement.PublicKey(derRepresentation: bytes)
+                failure = .keyAgreementFailed
+                secret = try key.sharedSecretFromKeyAgreement(with: peer)
+            default:
+                failure = .ownKeyInvalid
+                throw ChatFailure.invalid("未知聊天算法。")
+            }
+            emit(.keyAgreement, .succeeded, trace: trace)
+            return secret
+        } catch {
+            emit(.keyAgreement, .failed, failure, trace: trace)
+            throw error
+        }
+    }
+    private static func deriveKey(_ secret: SharedSecret, salt: Data, info: Data, trace: ((ChatCryptoTrace) -> Void)?) throws -> SymmetricKey {
+        try traced(.keyDerivation, trace: trace, failure: { _ in .cryptoFailed }) {
+            secret.hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt, sharedInfo: info, outputByteCount: 32)
+        }
+    }
+    private static func legacyKey(_ key: ChatPrivateKey, remote: String, trace: ((ChatCryptoTrace) -> Void)?) throws -> SymmetricKey {
+        let secret = try shared(privateKey: key, remote: remote, trace: trace)
+        return try deriveKey(secret, salt: Data(repeating: 0, count: 32), info: Data("nu-chat-v1".utf8), trace: trace)
     }
     static func aad(_ meta: JSONValue) throws -> Data {
         try json(["nu-chat-v2", meta.chatString("sender_subject"), meta.chatString("sender_device_id"), meta.chatString("recipient_subject"), meta.chatString("client_msg_id"), meta.chatString("target_subject"), meta.chatString("target_device_id"), meta.chatString("algorithm"), meta.chatString("sender_key_id"), meta.chatString("recipient_key_id")])
     }
-    static func encrypt(_ text: String, key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: Data? = nil) throws -> (String, String) {
-        try ChatValidation.plaintext(text)
-        guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
-        let associated = try aad(metadata)
-        let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(SHA256.hash(data: associated)), sharedInfo: Data("nu-chat-v2".utf8), outputByteCount: 32)
-        let sealed = try AES.GCM.seal(Data(text.utf8), using: derived, nonce: try nonce.map { try AES.GCM.Nonce(data: $0) }, authenticating: associated)
+    static func encrypt(_ text: String, key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: Data? = nil, trace: ((ChatCryptoTrace) -> Void)? = nil) throws -> (String, String) {
+        try traced(.plaintextValidation, trace: trace, failure: { _ in .plaintextInvalid }) { try ChatValidation.plaintext(text) }
+        let associated = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) {
+            guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
+            return try aad(metadata)
+        }
+        let secret = try shared(privateKey: key, remote: remote, trace: trace)
+        let derived = try deriveKey(secret, salt: Data(SHA256.hash(data: associated)), info: Data("nu-chat-v2".utf8), trace: trace)
+        let iv = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) { try nonce.map { try AES.GCM.Nonce(data: $0) } }
+        let sealed = try traced(.authenticatedCipher, trace: trace, failure: authenticatedFailure) {
+            try AES.GCM.seal(Data(text.utf8), using: derived, nonce: iv, authenticating: associated)
+        }
         return (Data(sealed.nonce).base64EncodedString(), (sealed.ciphertext + sealed.tag).base64EncodedString())
     }
-    static func decrypt(key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: String, ciphertext: String) throws -> String {
-        guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
-        let associated = try aad(metadata)
-        let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(SHA256.hash(data: associated)), sharedInfo: Data("nu-chat-v2".utf8), outputByteCount: 32)
-        let bytes = try decoded(ciphertext, maximum: 16400), iv = try decoded(nonce, maximum: 12)
-        guard bytes.count >= 16, iv.count == 12 else { throw ChatFailure.invalid("聊天密文长度错误。") }
-        let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: iv), ciphertext: bytes.dropLast(16), tag: bytes.suffix(16))
-        let plain = try AES.GCM.open(box, using: derived, authenticating: associated)
-        guard let text = String(data: plain, encoding: .utf8), plain.count <= 16384 else { throw ChatFailure.invalid("聊天正文不是有效文字。") }; return text
+    static func decrypt(key: ChatPrivateKey, remote: String, metadata: JSONValue, nonce: String, ciphertext: String, trace: ((ChatCryptoTrace) -> Void)? = nil) throws -> String {
+        let associated = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) {
+            guard try metadata.chatString("algorithm") == key.algorithm else { throw ChatFailure.invalid("聊天算法与本机密钥不匹配。") }
+            return try aad(metadata)
+        }
+        let secret = try shared(privateKey: key, remote: remote, trace: trace)
+        let derived = try deriveKey(secret, salt: Data(SHA256.hash(data: associated)), info: Data("nu-chat-v2".utf8), trace: trace)
+        let box = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) {
+            let bytes = try decoded(ciphertext, maximum: 16400), iv = try decoded(nonce, maximum: 12)
+            guard bytes.count >= 16, iv.count == 12 else { throw ChatFailure.invalid("聊天密文长度错误。") }
+            return try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: iv), ciphertext: bytes.dropLast(16), tag: bytes.suffix(16))
+        }
+        let plain = try traced(.authenticatedCipher, trace: trace, failure: authenticatedFailure) {
+            try AES.GCM.open(box, using: derived, authenticating: associated)
+        }
+        return try traced(.plaintextValidation, trace: trace, failure: { _ in .plaintextInvalid }) {
+            guard let text = String(data: plain, encoding: .utf8), plain.count <= 16384 else { throw ChatFailure.invalid("聊天正文不是有效文字。") }
+            return text
+        }
     }
-    static func encryptLegacy(_ text: String, key: ChatPrivateKey, remote: String, nonce: Data? = nil) throws -> String {
-        try ChatValidation.plaintext(text)
-        let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(repeating: 0, count: 32), sharedInfo: Data("nu-chat-v1".utf8), outputByteCount: 32)
-        let sealed = try AES.GCM.seal(Data(text.utf8), using: derived, nonce: try nonce.map { try AES.GCM.Nonce(data: $0) })
+    static func encryptLegacy(_ text: String, key: ChatPrivateKey, remote: String, nonce: Data? = nil, trace: ((ChatCryptoTrace) -> Void)? = nil) throws -> String {
+        try traced(.plaintextValidation, trace: trace, failure: { _ in .plaintextInvalid }) { try ChatValidation.plaintext(text) }
+        let derived = try legacyKey(key, remote: remote, trace: trace)
+        let iv = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) { try nonce.map { try AES.GCM.Nonce(data: $0) } }
+        let sealed = try traced(.authenticatedCipher, trace: trace, failure: authenticatedFailure) {
+            try AES.GCM.seal(Data(text.utf8), using: derived, nonce: iv)
+        }
         return Data(sealed.nonce).base64EncodedString() + ":" + (sealed.ciphertext + sealed.tag).base64EncodedString()
     }
-    static func decryptLegacy(_ cipher: String, key: ChatPrivateKey, remote: String) throws -> String {
-        let parts = cipher.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2 else { throw ChatFailure.invalid("旧协议密文格式错误。") }
-        let iv = try decoded(String(parts[0]), maximum: 12), bytes = try decoded(String(parts[1]), maximum: 16400)
-        guard iv.count == 12, bytes.count >= 16 else { throw ChatFailure.invalid("旧协议密文长度错误。") }
-        let derived = try shared(privateKey: key, remote: remote).hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(repeating: 0, count: 32), sharedInfo: Data("nu-chat-v1".utf8), outputByteCount: 32)
-        let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: iv), ciphertext: bytes.dropLast(16), tag: bytes.suffix(16))
-        let plain = try AES.GCM.open(box, using: derived)
-        guard plain.count <= 16384, let text = String(data: plain, encoding: .utf8) else { throw ChatFailure.invalid("旧协议正文无效。") }; return text
+    static func decryptLegacy(_ cipher: String, key: ChatPrivateKey, remote: String, trace: ((ChatCryptoTrace) -> Void)? = nil) throws -> String {
+        let (iv, bytes) = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) {
+            let parts = cipher.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2 else { throw ChatFailure.invalid("旧协议密文格式错误。") }
+            let ivData = try decoded(String(parts[0]), maximum: 12), encrypted = try decoded(String(parts[1]), maximum: 16400)
+            guard ivData.count == 12, encrypted.count >= 16 else { throw ChatFailure.invalid("旧协议密文长度错误。") }
+            return (ivData, encrypted)
+        }
+        let derived = try legacyKey(key, remote: remote, trace: trace)
+        let box = try traced(.cipherFormat, trace: trace, failure: { _ in .cipherFormatInvalid }) {
+            try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: iv), ciphertext: bytes.dropLast(16), tag: bytes.suffix(16))
+        }
+        let plain = try traced(.authenticatedCipher, trace: trace, failure: authenticatedFailure) { try AES.GCM.open(box, using: derived) }
+        return try traced(.plaintextValidation, trace: trace, failure: { _ in .plaintextInvalid }) {
+            guard plain.count <= 16384, let text = String(data: plain, encoding: .utf8) else { throw ChatFailure.invalid("旧协议正文无效。") }
+            return text
+        }
     }
 }
 

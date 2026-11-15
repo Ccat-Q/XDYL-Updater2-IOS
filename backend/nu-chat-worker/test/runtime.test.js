@@ -23,7 +23,7 @@ test('Cloudflare workerd + real D1/R2: all migrations, native/Android send, CAS,
     } }));
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_legacy.sql', '0002_v2.sql', '0003_frontend.sql', '0004_android_interop.sql']) {
+    for (const name of ['0001_legacy.sql', '0002_v2.sql', '0003_frontend.sql', '0004_android_interop.sql', '0005_android_registration_backup.sql']) {
       const sql = readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '');
       await db.batch(sql.split(';').map(s => s.trim()).filter(Boolean).map(s => db.prepare(s)));
     }

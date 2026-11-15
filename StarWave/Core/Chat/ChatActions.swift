@@ -66,7 +66,9 @@ extension ChatController {
             let binding = try await json("/chat/v2/devices/\(c.ring.deviceID)/legacy")
             guard binding["enabled"]?.boolValue == true, binding["device_id"]?.stringValue == c.ring.deviceID else { throw ChatFailure.service(403, "LEGACY_PRIMARY_DEVICE_REQUIRED", nil) }
             guard let algorithm = ["X25519", "P256"].first(where: { inspection.legacy[$0] != nil }), let remote = inspection.legacy[algorithm], let key = c.ring.keys.first(where: { $0.algorithm == algorithm }) else { throw ChatFailure.invalid("双方没有可互通的旧协议算法。") }
-            let cipher = try ChatCrypto.encryptLegacy(text, key: key, remote: remote)
+            let cipher = try diagnosticEncrypt(messageID: id, wireProtocol: .v1, key: key, remote: remote) { trace in
+                try ChatCrypto.encryptLegacy(text, key: key, remote: remote, trace: trace)
+            }
             path = "/chat/v2/legacy/messages"
             request = .object(["client_msg_id": .string(id), "to_username": .string(peer.username), "cipher": .string(cipher), "ts": .number(Double(now)), "sender_key_id": .string(key.keyID), "recipient_public_key": .string(remote)])
         } else {
@@ -80,7 +82,9 @@ extension ChatController {
                 var metadata = fields
                 metadata["sender_subject"] = .string(c.subject); metadata["sender_device_id"] = .string(c.ring.deviceID)
                 metadata["recipient_subject"] = .string(peer.subject); metadata["client_msg_id"] = .string(id)
-                let encrypted = try ChatCrypto.encrypt(text, key: local, remote: target.publicKey, metadata: .object(metadata))
+                let encrypted = try diagnosticEncrypt(messageID: id, wireProtocol: .v2, key: local, remote: target.publicKey) { trace in
+                    try ChatCrypto.encrypt(text, key: local, remote: target.publicKey, metadata: .object(metadata), trace: trace)
+                }
                 fields["nonce"] = .string(encrypted.0); fields["ciphertext"] = .string(encrypted.1); envelopes.append(.object(fields))
             } }
             path = "/chat/v2/messages"

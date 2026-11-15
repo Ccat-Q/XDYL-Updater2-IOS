@@ -6,6 +6,7 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
     let relay: URL
     private let route: ChatRelayRoute
     private var session: URLSession!
+    var diagnosticHandler: ((ChatDiagnosticHTTPEvent) -> Void)?
     init(relay: URL, configuration: URLSessionConfiguration = .ephemeral, route: ChatRelayRoute = .automatic) {
         self.relay = relay
         self.route = route
@@ -40,6 +41,10 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
     private func request(_ path: String, token: String?, method: String, bytes: Data?, contentType: String,
                          query: [URLQueryItem] = [], mainCredential: Bool = false, digest: String? = nil,
                          timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
+        let started = Date(), diagnosticRoute = ChatDiagnosticRoute(path: path), observer = diagnosticHandler
+        var diagnosticFailure: ChatDiagnosticReason?, diagnosticStatus: Int?
+        observer?(.init(route: diagnosticRoute, outcome: .started, status: nil, elapsedMilliseconds: 0, reason: nil))
+        do {
         guard !mainCredential || (path == "/chat/v2/session" && method == "POST" && query.isEmpty),
               !query.contains(where: { $0.name.lowercased().contains("token") }) else {
             throw ChatFailure.invalid("Main credentials may only be sent to the session endpoint.")
@@ -61,18 +66,24 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
         do { (data, response) = try await session.data(for: request) }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch is CancellationError { throw CancellationError() }
-        catch { throw ChatFailure.invalid("聊天网络连接失败。原发送请求已保留，可稍后原样重试。") }
+        catch { diagnosticFailure = .transportFailure; throw ChatFailure.invalid("聊天网络连接失败。原发送请求已保留，可稍后原样重试。") }
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, let responseURL = http.url,
               responseURL.host == url.host, responseURL.scheme == "https", responseURL.port == url.port,
               responseURL.user == nil, responseURL.password == nil, responseURL.path == url.path,
               data.count <= 8 * 1048576 else { throw ChatFailure.invalid("The chat response origin, endpoint or size is invalid.") }
+        diagnosticStatus = http.statusCode
         guard http.statusCode == 200 else {
             let value = try? JSONDecoder().decode(JSONValue.self, from: data)
             let code = value?["error"]?["code"]?.stringValue ?? "HTTP_\(http.statusCode)"
             throw ChatFailure.service(http.statusCode, code, http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init))
         }
+        observer?(.init(route: diagnosticRoute, outcome: .succeeded, status: http.statusCode, elapsedMilliseconds: ChatDiagnosticSafety.elapsed(since: started), reason: nil))
         return (data, http)
+        } catch {
+            observer?(.init(route: diagnosticRoute, outcome: .failed, status: diagnosticStatus, elapsedMilliseconds: ChatDiagnosticSafety.elapsed(since: started), reason: diagnosticFailure ?? ChatDiagnosticSafety.reason(for: error)))
+            throw error
+        }
     }
 }
 

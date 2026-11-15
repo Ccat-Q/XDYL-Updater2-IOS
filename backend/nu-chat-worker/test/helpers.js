@@ -9,7 +9,7 @@ import { encrypt } from '../src/protocol.js';
 export class SQLiteD1 {
   constructor() {
     this.raw = new DatabaseSync(':memory:'); this.raw.exec('PRAGMA foreign_keys=ON');
-    for (const name of ['0001_legacy.sql', '0002_v2.sql', '0003_frontend.sql', '0004_android_interop.sql']) this.raw.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
+    for (const name of ['0001_legacy.sql', '0002_v2.sql', '0003_frontend.sql', '0004_android_interop.sql', '0005_android_registration_backup.sql']) this.raw.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
     this.primaryReads = 0;
   }
   withSession(mode) { if (mode !== 'first-primary') throw new Error('unexpected session'); this.primaryReads++; return this; }
@@ -50,7 +50,7 @@ export async function keyPair(algorithm) {
   const pair = await crypto.subtle.generateKey(spec, true, ['deriveBits']);
   return { algorithm, key_id: crypto.randomUUID(), public_key: base64(await crypto.subtle.exportKey('spki', pair.publicKey)), privateKey: pair.privateKey };
 }
-export async function fixture(options = {}) {
+export async function fixture(options = {}, workerFactory = createWorker) {
   const db = new SQLiteD1(); let clock = 1792386000000;
   const identities = new Map(); const calls = []; const bark = [];
   let authResponse = null; let barkResponse = () => Response.json({ code: 200 });
@@ -65,7 +65,7 @@ export async function fixture(options = {}) {
     throw new Error('unexpected network destination');
   };
   const deps = { now: () => clock, fetch: fetcher, random: () => 0 };
-  const worker = createWorker(deps);
+  const worker = workerFactory(deps);
   const env = { DB: db, CURSOR_SECRET: base64(new Uint8Array(32).fill(10)),
     BARK_ENABLED: 'true', BARK_ENCRYPTION_KEY: base64(new Uint8Array(32).fill(20)), ...options };
   async function call(path, token, method = 'GET', data, extra = {}) {

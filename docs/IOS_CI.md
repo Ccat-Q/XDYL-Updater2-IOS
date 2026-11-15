@@ -38,7 +38,9 @@ Actions Step Summary 记录精确命中状态与实际恢复键。编译与归�
 
 ## 发布门禁
 
-IPA artifact 可由独立归档 Job 先完成上传，但不代表测试验收通过。只有 `v*` 标签，且三个编译/测试 Job 全部成功后，`release` Job 才下载本次运行的 IPA、复核 SHA-256 并创建或更新 GitHub Release。
+IPA artifact 可由独立归档 Job 先完成上传，但不代表测试验收通过。另有独立并行的 Linux `backend-tests` Job，使用锁定 Node 24 依赖执行生产快照哈希、双曲线兼容与真实 workerd/D1/R2 回归；Worker 打包编译也只在 Actions 中执行。所有 iOS 构建和 test-without-building 统一传入 `CHAT_SOURCE_REVISION=github.sha`，通过 Info.plist 在诊断页识别实际构建。
+
+只有 `v*` 标签，且三个 iOS 编译/测试 Job 与后端回归全部成功后，`release` Job 才下载本次运行的 IPA、复核 SHA-256 并创建或更新 GitHub Release。
 
 默认 Job 只有 `contents: read`；只有受门禁保护的发布 Job 获得 `contents: write`。测试结果与截图保留独立 artifact，便于确认真正执行的测试数量及失败原因。
 

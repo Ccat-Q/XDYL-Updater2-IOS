@@ -84,6 +84,36 @@ default_algorithm可省略默认X25519；返回 `data:{enabled:true,device_id,re
 
 envelope.protocol明确决定编解码；发送者是主设备时sender_device_id为真实UUID，否则legacy:username。不能按UUID格式强行解析旧发送设备。其他设备没有这份密文，显示缺口。隐藏/清空/撤回/保留/未读按统一会话规则生效；旧pull只返回该旧身份有权可见密文。
 
+## 2026-11-15 生产新增的 Android V1 接口
+
+以下接口从实际生产 Worker 的 Source Map 恢复到仓库，均使用主站 Bearer，按认证 subject 隔离，不接受 query/body token。平台前缀 `/Android/`、`/iOS/` 是同一套路径的别名；`POST ...?__alias=1` 仅作为 GET 的网络回退，保留 Authorization、移除 alias 参数且不转发 POST body。数据库增量定义见 `0005_android_registration_backup.sql`，本次未向生产应用迁移。
+
+### POST /chat/device/register
+
+body：`device_code` 为 64 位小写十六进制稳定设备引用，`platform` 为 `android` 或 `ios`，`app_version` 为不超过 32 字符的版本文本。当前实现会校验 app_version，客户端应明确提供。按 `(subject, device_code)` 幂等保存 first_seen/last_seen，返回 `data:{platform,chat_base,entry_prefix,protocol,registered_at_ms}`；Android 为 `/Android` 与 `v1-legacy`，iOS 为 `/iOS` 与 `v2`。节点地址由服务端返回，不由设备码任意指定。
+
+### PUT /chat/key-backup
+
+body：`pwd_blob`、`code_blob` 均为客户端生成的加密备份文本，各不超过 8000 字符；`code_hash` 为 64 位小写十六进制；`kdf` 为不超过 64 字符的描述。按当前 subject upsert，返回 `data:{updated_at_ms}`。服务端不持有密码、恢复码或解密私钥，不验证密文能否实际恢复。
+
+### POST /chat/key-backup
+
+与 PUT 相同的幂等 upsert，供网络不支持 PUT 时使用；不是消息发送或私钥轮换操作。
+
+### GET /chat/key-backup
+
+无 body/query，返回当前 subject 的 `data:{pwd_blob,code_blob,kdf,updated_at_ms}`；没有备份为 404 `BACKUP_NOT_FOUND`。不能读取其他账号的备份。
+
+### POST /chat/key-backup/lookup
+
+body：`code_hash`，格式同上。仅在当前认证 subject 下匹配，返回同 GET 的加密数据；不匹配为 404 `CODE_MISMATCH`，不作为匿名跨账号恢复入口。
+
+### DELETE /chat/key-backup
+
+无 body/query，仅删除当前 subject 的加密备份，返回 `{ok:true}`；不删除已登记公钥、聊天消息或本机私钥。
+
+生产快照与仓库的已知差异：2026-11-15 09:44:36 UTC 部署将 `legacySend` 的收件人选钥改为默认曲线，可能把 P256 密文路由到 X25519 key ID。原样快照保留在仓库，工作源码恢复共同曲线选择，并新增测试分别复现线上错误与验证本地修复。本次不部署该修复，详见[生产源码同步记录](../CHAT_SERVER_SYNC_2026-11-15.md)。
+
 ## 密码学与验证
 
 V1：DER SPKI，ECDH X25519/P-256，HKDF-SHA256 salt=32个0字节、info=UTF8("nu-chat-v1")、32字节key；AES256GCM随机nonce12、tag16、**无AAD**，cipher=`base64(nonce):base64(ciphertext||tag)`。不得套用V2的AAD/hash salt。由于V1无身份AAD，不拥有V2的元数据绑定性质，不能把兼容安全级别宣传成完全相同。

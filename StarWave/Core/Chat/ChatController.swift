@@ -32,6 +32,7 @@ final class ChatController: ObservableObject {
     @Published var lifecycleRevision = UUID()
     @Published var unknownEvents = false
 
+    let diagnostics = ChatDiagnostics()
     let sessionStore: SessionStore
     let mainAPI: APIClient
     var connection: ChatConnection?
@@ -66,22 +67,26 @@ final class ChatController: ObservableObject {
         if namespace != ns || mainGeneration != sessionStore.generation { resetIdentity() }
         mainGeneration = sessionStore.generation; namespace = ns; subject = owner; username = profile.username
         enabled = defaults.bool(forKey: "chat.consent." + ns)
+        diagnostics.resetScope(ns)
     }
     func resetIdentity() {
-        suspend(); namespace = nil; subject = nil; username = ""; enabled = false
+        suspend(); diagnostics.resetSession(); diagnostics.resetScope(nil)
+        namespace = nil; subject = nil; username = ""; enabled = false
         localStore = nil
         messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; features = []; changedPeers = []
         needsReset = false; error = nil; currentDeviceID = ""; status = "未启用私聊"
     }
     func suspend() {
+        diagnostics.invalidateCallbacks()
+        diagnostics.record(.suspended, details: [.state(.disconnected)])
         foreground = false; ticket = UUID(); monitorID = UUID()
         connectionTask?.cancel(); connectionTask = nil; syncTask?.cancel(); syncTask = nil
         connection?.transport.cancel(); connection = nil; connected = false
     }
     func setEnabled(_ value: Bool) {
-        guard let ns = namespace else { error = "主站资料缺少稳定账号 ID，请刷新资料后重试。"; return }
+        guard let ns = namespace else { if !value { diagnostics.resetSession() }; error = "主站资料缺少稳定账号 ID，请刷新资料后重试。"; return }
         defaults.set(value, forKey: "chat.consent." + ns); enabled = value
-        if !value { suspend(); localStore = nil; messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; status = "私聊已停用，本地历史和密钥未删除" }
+        if !value { suspend(); diagnostics.resetSession(); localStore = nil; messages = []; conversations = []; peers = []; pending = []; unreadCount = 0; status = "私聊已停用，本地历史和密钥未删除" }
     }
     func changeRelay(_ raw: String, profile: UserProfile?) throws {
         let url = try ChatValidation.relay(raw)
@@ -140,7 +145,13 @@ final class ChatController: ObservableObject {
         if let c = connection, c.ticket == ticket, c.expiresAt > Self.now + 30000 { return c }
         if let task = connectionTask { return try await task.value }
         let stamp = ticket, generation = sessionStore.generation
+        let diagnosticGeneration = diagnostics.generation, connectionStarted = Date()
+        diagnostics.record(.connectStarted, outcome: .started, details: [.stage(.connection), .elapsedMilliseconds(0)], generation: diagnosticGeneration)
         let task: Task<ChatConnection, Error> = Task { @MainActor in
+            var diagnosticStage: ChatDiagnosticStage = .localKey
+            var phaseStarted = Date()
+            var diagnosticReason: ChatDiagnosticReason?
+            do {
             // Drain the old page before replacing its transport. Its cursor
             // commit/ACK cannot be split by a concurrent session renewal.
             if let flight = self.syncTask { _ = try? await flight.value }
@@ -151,6 +162,7 @@ final class ChatController: ObservableObject {
             try vault.save(ring) // Save before issuing public-key registration.
             let store = try self.localStorage()
             let transport = self.transportFactory(relay)
+            self.bindDiagnosticTransport(transport)
             var succeeded = false; defer { if !succeeded { transport.cancel() } }
             @MainActor func valid() throws {
                 try Task.checkCancellation()
@@ -199,28 +211,43 @@ final class ChatController: ObservableObject {
             // Independent reads overlap, but no main credential is sent to the
             // relay until its v2 capabilities AND the main identity are valid.
             // Profile refresh still uses MAIN's own transport and origin rules.
+            diagnosticStage = .capabilities; phaseStarted = Date()
+            let profileStarted = Date()
             async let refreshedProfile = self.mainAPI.profile()
             let caps = try ChatCapabilities(try await transport.json("/chat/v2/capabilities", timeout: 5)["data"] ?? .null)
             try valid(); self.features = caps.features
+            self.diagnostics.record(.capabilitiesVerified, outcome: .succeeded, details: [.stage(.capabilities), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: diagnosticGeneration)
+            diagnosticStage = .mainProfile; phaseStarted = profileStarted
             let profile = try await refreshedProfile; try valid()
-            guard profile.stableID.map({ "account:" + $0 }) == owner, let mainToken = self.sessionStore.accessToken else { throw ChatFailure.invalid("主站身份已变化，已停止聊天认证。") }
+            guard profile.stableID.map({ "account:" + $0 }) == owner, let mainToken = self.sessionStore.accessToken else { diagnosticReason = .identityMismatch; throw ChatFailure.invalid("主站身份已变化，已停止聊天认证。") }
+            self.diagnostics.record(.identityVerified, outcome: .succeeded, details: [.stage(.mainProfile), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: profileStarted))], generation: diagnosticGeneration)
+            diagnosticStage = .session; phaseStarted = Date()
             let session = try await transport.json("/chat/v2/session", token: mainToken, method: "POST", body: .chatObject(["device_id": ring.deviceID, "device_name": "StarWave iPhone"]), mainCredential: true)["data"] ?? .null
             try valid()
-            guard try session.chatString("subject") == owner else { throw ChatFailure.invalid("中继账号与主站稳定身份不一致。") }
+            guard try session.chatString("subject") == owner else { diagnosticReason = .identityMismatch; throw ChatFailure.invalid("中继账号与主站稳定身份不一致。") }
             let token = try session.chatString("chat_token"), name = try session.chatString("username")
+            self.diagnostics.record(.sessionExchanged, outcome: .succeeded, details: [.stage(.session), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: diagnosticGeneration)
+            diagnosticStage = .deviceBundle; phaseStarted = Date()
             let c = try await self.localOnlyWrite { _, locallyValid in
                 try valid(); try locallyValid()
                 ring = try await self.reconcileDeviceKeys(ring: ring, transport: transport, token: token, username: name, namespace: ns, valid: {
                     try valid(); try locallyValid()
                 })
                 try valid(); try locallyValid()
+                self.diagnostics.record(.deviceKeysVerified, outcome: .succeeded, details: [.stage(.deviceBundle), .deviceID(ring.deviceID), .revision(ring.revision), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: diagnosticGeneration)
                 let c = ChatConnection(ticket: stamp, namespace: ns, subject: owner, username: name, token: token, expiresAt: try session.chatInt64("expires_at_ms"), transport: transport, store: store, ring: ring)
                 // Publish under the same lock as reconciliation. A restore or
                 // rotation must not be overwritten by a stale keyring snapshot.
                 self.connection?.transport.cancel(); self.connection = c; self.connected = true; self.username = name
                 return c
             }
-            succeeded = true; return c
+            succeeded = true
+            self.diagnostics.record(.connected, outcome: .succeeded, details: [.stage(.connection), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: connectionStarted))], generation: diagnosticGeneration)
+            return c
+            } catch {
+                self.diagnostics.record(.connectFailed, outcome: .failed, reason: diagnosticReason ?? ChatDiagnosticSafety.reason(for: error), details: [.stage(diagnosticStage), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: diagnosticGeneration)
+                throw error
+            }
         }
         connectionTask = task
         defer { if ticket == stamp { connectionTask = nil } }
@@ -234,6 +261,7 @@ final class ChatController: ObservableObject {
         try current(c); return value["data"] ?? value
     }
     func sync(_ c: ChatConnection) async throws {
+        try current(c)
         if localWriteInProgress { return }
         if let task = syncTask { return try await task.value }
         let task = Task { @MainActor in try await self.syncPages(c) }; syncTask = task
@@ -274,11 +302,18 @@ final class ChatController: ObservableObject {
     }
     private func syncPages(_ c: ChatConnection) async throws {
         try current(c)
+        let generation = diagnostics.generation
+        var phase: ChatDiagnosticStage = .syncFetch
+        var phaseStarted = Date()
+        do {
+        try current(c)
         var cursor = try await c.store.get(String.self, kind: "state", id: "cursor")
         for _ in 0..<100 {
             try current(c)
             var query = [URLQueryItem(name: "limit", value: "200")]
             if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            phase = .syncFetch; phaseStarted = Date()
+            diagnostics.record(.syncStarted, outcome: .started, details: [.stage(.syncFetch)], generation: generation)
             let page = try await c.transport.json("/chat/v2/sync", token: c.token, query: query)["data"] ?? .null
             try current(c)
             let events = try page["events"].chatArray(), next = try page.chatString("next_cursor")
@@ -295,38 +330,106 @@ final class ChatController: ObservableObject {
                 }
             }
             try current(c)
+            phase = .syncCommit; phaseStarted = Date()
             let changes = try await c.store.commit(events: events, messages: decoded, cursor: next, owner: c.subject, deviceID: c.ring.deviceID)
             try await mergeCommitted(changes, c: c)
             try current(c)
+            diagnostics.record(.syncCommitted, outcome: .succeeded, details: [.stage(.syncCommit), .count(changes.count), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: generation)
+            phase = .syncAck; phaseStarted = Date()
             _ = try await c.transport.json("/chat/v2/sync/ack", token: c.token, method: "POST", body: .chatObject(["cursor": next]))
             try current(c); cursor = next
+            diagnostics.record(.syncAcknowledged, outcome: .succeeded, details: [.stage(.syncAck), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: generation)
+            diagnostics.record(.syncCompleted, outcome: .succeeded, details: [.stage(.syncAck), .count(decoded.count), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: generation)
             if page["has_more"]?.boolValue != true { break }
         }
+        phase = .syncFetch; phaseStarted = Date()
         try await refreshConversations(c)
+        } catch {
+            diagnostics.record(.syncFailed, outcome: .failed, reason: ChatDiagnosticSafety.reason(for: error), details: [.stage(phase), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: phaseStarted))], generation: generation)
+            throw error
+        }
     }
     func decodeMessage(_ event: JSONValue, c: ChatConnection, storedRecord: ChatMessage? = nil) throws -> ChatMessage {
-        let sender = try event.chatString("sender_subject"), recipient = try event.chatString("recipient_subject")
-        guard sender == c.subject || recipient == c.subject else { throw ChatFailure.invalid("拒绝保存不属于当前账号的消息。") }
-        let peer = sender == c.subject ? recipient : sender
-        var message = ChatMessage(id: try event.chatString("message_id"), clientID: try event.chatString("client_msg_id"), conversationID: try event.chatString("conversation_id"), sequence: try event.chatSequence("conversation_seq"), sender: sender, recipient: recipient, text: nil, problem: nil, acceptedAt: try event.chatInt64("accepted_at_ms"), status: sender == c.subject ? "accepted" : "incoming", raw: event, peerSubject: peer)
+        let generation = diagnosticGeneration(for: c), started = Date()
+        let reference: String
+        if case .string(let value)? = event["message_id"] { reference = value } else { reference = "" }
+        var details: [ChatDiagnosticDetail] = [.messageID(reference)]
+        diagnostics.record(.decryptStarted, outcome: .started, details: details, generation: generation)
+        let sender: String, recipient: String, peer: String
+        var identityFailure: ChatDiagnosticReason = .schemaUnsupported
+        var message: ChatMessage
+        do {
+            sender = try event.chatString("sender_subject"); recipient = try event.chatString("recipient_subject")
+            guard sender == c.subject || recipient == c.subject else {
+                identityFailure = .identityMismatch
+                throw ChatFailure.invalid("拒绝保存不属于当前账号的消息。")
+            }
+            peer = sender == c.subject ? recipient : sender
+            message = ChatMessage(id: try event.chatString("message_id"), clientID: try event.chatString("client_msg_id"), conversationID: try event.chatString("conversation_id"), sequence: try event.chatSequence("conversation_seq"), sender: sender, recipient: recipient, text: nil, problem: nil, acceptedAt: try event.chatInt64("accepted_at_ms"), status: sender == c.subject ? "accepted" : "incoming", raw: event, peerSubject: peer)
+        } catch {
+            diagnostics.record(.decryptFailed, outcome: .failed, reason: identityFailure, details: details + [.stage(.envelope)], generation: generation)
+            throw error
+        }
+        details.append(.direction(sender == c.subject ? .outgoing : .incoming))
         message.associateLegacySend(owner: c.subject, deviceID: c.ring.deviceID)
         if let unavailable = event["unavailable"]?.stringValue {
             message.status = unavailable == "recalled" ? "recalled" : "hidden"
-            // Keep only wire identity until the store reconciles the outbox;
-            // the transaction removes raw before persisting the tombstone.
             var identity = event.objectValue; identity["envelope"] = nil; message.raw = .object(identity)
             return message
+        }
+        var failureReason: ChatDiagnosticReason = .schemaUnsupported
+        var stage: ChatDiagnosticStage = .envelope
+        var cryptoFailure: ChatDiagnosticReason?
+        var pair: Bool?
+        @MainActor func phase(_ next: ChatDiagnosticStage, _ reason: ChatDiagnosticReason) {
+            stage = next; failureReason = reason
+            diagnostics.record(.decryptStage, outcome: .started, details: details + [.stage(next)], generation: generation)
+        }
+        @MainActor func keyDetails(_ key: ChatPrivateKey, _ remote: String) {
+            pair = ChatCrypto.publicPairMatches(key)
+            details += [.algorithm(.init(key.algorithm)), .localAlgorithm(.init(key.algorithm)), .ownPublicKey(key.publicKey), .peerPublicKey(remote), .pairMatches(pair)]
+            diagnostics.record(.keyPairChecked, details: [.algorithm(.init(key.algorithm)), .ownKeyID(key.keyID), .ownPublicKey(key.publicKey), .pairMatches(pair)], generation: generation)
+        }
+        let trace: (ChatCryptoTrace) -> Void = { [weak self] value in
+            if value.outcome == .failed {
+                cryptoFailure = value.failure.map(ChatDiagnosticSafety.reason) ?? .cryptoFailed
+                stage = ChatDiagnosticSafety.stage(value.stage)
+            }
+            self?.recordCryptoTrace(value, outgoing: false, details: details, generation: generation)
         }
         do {
             guard let e = event["envelope"] else { throw ChatFailure.invalid("此设备没有消息密文。") }
             let remote: String, key: ChatPrivateKey
             if e["protocol"]?.stringValue == "nu-chat-v1" {
-                key = try c.ring.key(e.chatString("own_key_id"))
+                details.append(.wireProtocol(.v1))
+                if let algorithm = e["algorithm"]?.stringValue { details.append(.wireAlgorithm(.init(algorithm))) }
+                let ownID = try e.chatString("own_key_id"), cipher = try e.chatString("cipher")
                 remote = try e.chatString(sender == c.subject ? "recipient_public_key" : "sender_public_key")
+                details.append(.ownKeyID(ownID))
+                phase(.localKey, .ownKeyMissing)
+                key = try c.ring.key(ownID)
+                keyDetails(key, remote)
+                phase(.deviceTarget, .targetMismatch)
+                if let ownPublic = e[sender == c.subject ? "sender_public_key" : "recipient_public_key"]?.stringValue {
+                    guard ownPublic == key.publicKey else { throw ChatFailure.invalid("旧协议信封与本机目标公钥不符。") }
+                    details.append(.targetMatches(true))
+                }
+                if let algorithm = e["algorithm"]?.stringValue, algorithm != key.algorithm {
+                    phase(.localKey, .algorithmMismatch)
+                    throw ChatFailure.invalid("旧协议信封与本机算法不符。")
+                }
+                phase(.peerTrust, .peerUntrusted)
                 try verifyRemote(peer: peer, keyID: ChatCrypto.legacyID(key.algorithm, remote), publicKey: remote)
-                message.text = try ChatCrypto.decryptLegacy(e.chatString("cipher"), key: key, remote: remote)
+                details.append(.trusted(true))
+                phase(.cipherFormat, .cryptoFailed)
+                message.text = try ChatCrypto.decryptLegacy(cipher, key: key, remote: remote, trace: trace)
             } else {
+                let wire = e["protocol"]?.stringValue
+                details.append(.wireProtocol(wire == nil || wire == "nu-chat-v2" ? .v2 : .unknown))
+                guard wire == nil || wire == "nu-chat-v2" else { throw ChatFailure.invalid("不支持的消息协议。") }
+                if let algorithm = e["algorithm"]?.stringValue { details.append(.wireAlgorithm(.init(algorithm))) }
                 let targetDevice = try e.chatString("target_device_id"), recipientKey = try e.chatString("recipient_key_id")
+                let senderKeyID = try e.chatString("sender_key_id"), nonce = try e.chatString("nonce"), ciphertext = try e.chatString("ciphertext")
                 let localHistory = storedRecord.map {
                     $0.raw == event && $0.id == message.id && $0.clientID == message.clientID && $0.conversationID == message.conversationID
                         && $0.sender == sender && $0.recipient == recipient && $0.sequence == message.sequence && $0.peerSubject == peer
@@ -334,29 +437,40 @@ final class ChatController: ObservableObject {
                         && ($0.validatedTargetDeviceID == targetDevice
                             || ($0.text != nil && $0.problem == nil && c.ring.archiveKeys.contains(where: { $0.keyID == recipientKey })))
                 } ?? false
+                phase(.deviceTarget, .targetMismatch)
                 guard e["target_subject"]?.stringValue == c.subject,
                       targetDevice == c.ring.deviceID || (localHistory && UUID(uuidString: targetDevice) != nil) else { throw ChatFailure.invalid("消息密文不属于本设备或可信本地历史。") }
+                details += [.targetMatches(true), .peerKeyID(senderKeyID)]
                 if localHistory { message.validatedTargetDeviceID = targetDevice }
-                key = try c.ring.key(e.chatString("recipient_key_id"))
-                let senderKeyID = try e.chatString("sender_key_id")
+                details.append(.ownKeyID(recipientKey))
+                phase(.localKey, .ownKeyMissing)
+                key = try c.ring.key(recipientKey)
                 if sender == c.subject {
+                    phase(.ownSender, .ownSenderUnverified)
                     let own = try c.ring.verifiedOwnSender(e)
                     guard own.algorithm == key.algorithm else { throw ChatFailure.invalid("本人发送钥与目标算法不符。") }
                     remote = own.publicKey
-                }
-                else {
+                } else {
                     remote = e["sender_public_key"]?.stringValue ?? peers.first(where: { $0.subject == peer })?.trustedKeys[senderKeyID] ?? ""
+                    phase(.peerTrust, .peerUntrusted)
                     try verifyRemote(peer: peer, keyID: senderKeyID, publicKey: remote)
+                    details.append(.trusted(true))
                 }
+                keyDetails(key, remote)
                 var metadata = e.objectValue
                 for k in ["sender_subject", "sender_device_id", "recipient_subject", "client_msg_id"] { metadata[k] = event[k] }
-                message.text = try ChatCrypto.decrypt(key: key, remote: remote, metadata: .object(metadata), nonce: e.chatString("nonce"), ciphertext: e.chatString("ciphertext"))
+                phase(.cipherFormat, .cryptoFailed)
+                message.text = try ChatCrypto.decrypt(key: key, remote: remote, metadata: .object(metadata), nonce: nonce, ciphertext: ciphertext, trace: trace)
                 message.validatedTargetDeviceID = targetDevice
             }
+            diagnostics.record(.decryptSucceeded, outcome: .succeeded, details: details + [.elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: started))], generation: generation)
         } catch {
-            message.problem = sender == c.subject
+            let reason = cryptoFailure == .aeadAuthenticationFailed && pair == false ? ChatDiagnosticReason.ownKeyPairMismatch : cryptoFailure ?? failureReason
+            if reason == .peerUntrusted { details.append(.trusted(false)) }
+            diagnostics.record(.decryptFailed, outcome: .failed, reason: reason, details: details + [.stage(stage), .elapsedMilliseconds(ChatDiagnosticSafety.elapsed(since: started))], generation: generation)
+            message.problem = (sender == c.subject
                 ? "无法验证或解密本人设备的消息：请从可信设备迁移或恢复私钥；不会自动信任消息附带的公钥。"
-                : "无法解密：请核对并信任联系人密钥，或从旧设备恢复所需私钥。"
+                : "无法解密：请核对并信任联系人密钥，或从旧设备恢复所需私钥。") + " [" + reason.rawValue + "]"
         }
         return message
     }

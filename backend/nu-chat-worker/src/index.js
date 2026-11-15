@@ -7,6 +7,9 @@ import { sweepRecovery } from './recovery.js';
 export const routes = [
   [/^\/chat\/ping$/, ['GET']], [/^\/chat\/key$/, ['POST']], [/^\/chat\/key\/[^/]+$/, ['GET']],
   [/^\/chat\/send$/, ['POST']], [/^\/chat\/pull$/, ['GET']], [/^\/chat\/read$/, ['GET', 'POST']],
+  [/^\/chat\/device\/register$/, ['POST']],
+  [/^\/chat\/key-backup$/, ['GET', 'POST', 'PUT', 'DELETE']],
+  [/^\/chat\/key-backup\/lookup$/, ['POST']],
   [/^\/chat\/v2\/capabilities$/, ['GET']], [/^\/chat\/v2\/session$/, ['POST', 'DELETE']],
   [/^\/chat\/v2\/devices$/, ['GET']], [/^\/chat\/v2\/devices\/[^/]+$/, ['DELETE']],
   [/^\/chat\/v2\/devices\/[^/]+\/keys$/, ['POST']], [/^\/chat\/v2\/users\/[^/]+\/keys$/, ['GET']],
@@ -40,10 +43,22 @@ export function createWorker(overrides = {}) {
   const deps = { fetch: (...args) => fetch(...args), now: () => Date.now(), random: () => Math.random(), ...overrides };
   return {
     async fetch(req, env, ctx) {
-      const requestId = crypto.randomUUID(); const url = new URL(req.url); const modern = url.pathname.startsWith('/chat/v2/');
+      const requestId = crypto.randomUUID(); const url = new URL(req.url); let modern = false;
       try {
+        // computed AFTER platform prefix strip; declared here so catch can reference it
         if (url.protocol !== 'https:') fail(400, 'HTTPS_REQUIRED');
         if (url.username || url.password || url.searchParams.has('token')) fail(400, 'INVALID_REQUEST');
+      // PLATFORM_PREFIX: /iOS and /Android are aliases of the same routes
+      if (url.pathname.indexOf('/Android/') === 0) url.pathname = '/' + url.pathname.slice(9);
+      else if (url.pathname.indexOf('/iOS/') === 0) url.pathname = '/' + url.pathname.slice(5);
+      // GET-as-POST escape hatch: networks that RST plain GET can send
+      // POST + __alias=1; unwrap it so the router sees the real verb.
+      if (req.method === 'POST' && url.searchParams.get('__alias') === '1') {
+        url.searchParams.delete('__alias');
+        // build explicitly: cloning a POST into a GET via Request(req,...) throws in Workers
+        req = new Request(url.toString(), { method: 'GET', headers: req.headers });
+      }
+        modern = url.pathname.startsWith('/chat/v2/');
         const route = routes.find(([pattern]) => pattern.test(url.pathname));
         if (!route) fail(404, 'NOT_FOUND');
         if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: {

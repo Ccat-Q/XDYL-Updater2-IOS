@@ -66,6 +66,7 @@ jobs:
           COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
           COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
+          CHAT_SOURCE_REVISION=${{ github.sha }}
       - name: Save successful simulator compilation before running tests
         if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
@@ -89,6 +90,7 @@ jobs:
           COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
           COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
+          CHAT_SOURCE_REVISION=${{ github.sha }}
       - name: Export test summary and UI regression previews
         if: always()
         run: |
@@ -142,6 +144,7 @@ jobs:
           COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
           COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
+          CHAT_SOURCE_REVISION=${{ github.sha }}
           CODE_SIGNING_REQUIRED=NO
       - name: Save successful device compilation
         if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
@@ -189,6 +192,7 @@ jobs:
           -showBuildTimingSummary
           COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
+          CHAT_SOURCE_REVISION=${{ github.sha }}
       - name: Save successful legacy compilation
         if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
@@ -196,10 +200,29 @@ jobs:
           path: ${{ steps.prepare.outputs.cache-root }}
           key: ${{ steps.prepare.outputs.cache-key }}
 
+  backend-tests:
+    name: Worker source and compatibility regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend/nu-chat-worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/nu-chat-worker/package-lock.json
+      - name: Install locked Worker test dependencies
+        run: npm ci
+      - name: Verify source snapshot, protocols, and workerd runtime
+        run: npm test
+
   release:
     name: Publish verified GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [simulator-tests, build, legacy-compatibility]
+    needs: [simulator-tests, build, legacy-compatibility, backend-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write

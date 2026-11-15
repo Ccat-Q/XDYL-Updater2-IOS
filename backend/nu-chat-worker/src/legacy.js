@@ -119,5 +119,68 @@ export async function legacy(req, env, db, url, deps) {
     await atomic(db,statements);
     return { ok: true };
   }
+  // ---------------- Device registration (first-launch handshake) ----------------
+  // Client reports platform + device_code (derived from account id, stable across
+  // reinstalls). Server records it and hands back the chat node for that platform.
+  if (path === '/chat/device/register' && req.method === 'POST') {
+    query(url, []);
+    const b = object(await body(req), ['device_code', 'platform'], ['app_version']);
+    if (typeof b.device_code !== 'string' || !/^[0-9a-f]{64}$/.test(b.device_code)) fail(400, 'INVALID_REQUEST');
+    if (b.platform !== 'android' && b.platform !== 'ios') fail(400, 'INVALID_REQUEST');
+    text(b.app_version, 32);
+    await atomic(db, [q(db, `INSERT INTO device_registry(subject,device_code,platform,app_version,first_seen,last_seen)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(subject,device_code) DO UPDATE SET platform=excluded.platform,
+        app_version=excluded.app_version, last_seen=excluded.last_seen`,
+      owner, b.device_code, b.platform, b.app_version || '', now, now)]);
+    const NODES = {
+      android: { chat_base: 'https://nu-pe-chat.cc.cd', entry_prefix: '/Android', protocol: 'v1-legacy' },
+      ios:     { chat_base: 'https://nu-pe-chat.cc.cd', entry_prefix: '/iOS',     protocol: 'v2' }
+    };
+    const node = NODES[b.platform];
+    return { ok: true, data: { platform: b.platform, chat_base: node.chat_base,
+      entry_prefix: node.entry_prefix, protocol: node.protocol, registered_at_ms: now } };
+  }
+
+  // ---------------- Private key backup (B1 password + B3 recovery code) ----------------
+  // Both blobs are client-side PBKDF2/AES-GCM ciphertext. The server stores them
+  // but cannot decrypt: no password, no recovery code. E2EE is not weakened.
+  // Accept PUT (proper) and POST (fallback path when a proxy degrades PUT).
+  // Both are idempotent upserts, so the verb carries no extra meaning.
+  if (path === '/chat/key-backup' && (req.method === 'PUT' || req.method === 'POST')) {
+    query(url, []);
+    const b = object(await body(req), ['pwd_blob', 'code_blob', 'code_hash', 'kdf']);
+    text(b.pwd_blob, 8000); text(b.code_blob, 8000); text(b.kdf, 64);
+    if (typeof b.code_hash !== 'string' || !/^[0-9a-f]{64}$/.test(b.code_hash)) fail(400, 'INVALID_REQUEST');
+    await atomic(db, [q(db, `INSERT INTO v2_key_backups(subject,pwd_blob,code_blob,code_hash,kdf,updated_at)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(subject) DO UPDATE SET pwd_blob=excluded.pwd_blob, code_blob=excluded.code_blob,
+        code_hash=excluded.code_hash, kdf=excluded.kdf, updated_at=excluded.updated_at`,
+      owner, b.pwd_blob, b.code_blob, b.code_hash, b.kdf, now)]);
+    return { ok: true, data: { updated_at_ms: now } };
+  }
+  if (path === '/chat/key-backup' && req.method === 'GET') {
+    query(url, []); await noBody(req);
+    const row = await q(db, 'SELECT pwd_blob,code_blob,kdf,updated_at FROM v2_key_backups WHERE subject=?', owner).first();
+    if (!row) fail(404, 'BACKUP_NOT_FOUND');
+    return { ok: true, data: { pwd_blob: row.pwd_blob, code_blob: row.code_blob,
+      kdf: row.kdf, updated_at_ms: row.updated_at } };
+  }
+  if (path === '/chat/key-backup/lookup' && req.method === 'POST') {
+    query(url, []);
+    const b = object(await body(req), ['code_hash']);
+    if (typeof b.code_hash !== 'string' || !/^[0-9a-f]{64}$/.test(b.code_hash)) fail(400, 'INVALID_REQUEST');
+    const row = await q(db, `SELECT pwd_blob,code_blob,kdf,updated_at FROM v2_key_backups
+      WHERE subject=? AND code_hash=?`, owner, b.code_hash).first();
+    if (!row) fail(404, 'CODE_MISMATCH');
+    return { ok: true, data: { pwd_blob: row.pwd_blob, code_blob: row.code_blob,
+      kdf: row.kdf, updated_at_ms: row.updated_at } };
+  }
+  if (path === '/chat/key-backup' && req.method === 'DELETE') {
+    query(url, []); await noBody(req);
+    await q(db, 'DELETE FROM v2_key_backups WHERE subject=?', owner).run();
+    return { ok: true };
+  }
+
   fail(404, 'NOT_FOUND');
 }
