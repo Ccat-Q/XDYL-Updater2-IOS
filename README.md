@@ -26,7 +26,7 @@ xcodebuild build-for-testing \
 
 ## IPA
 
-推送 `v*` 标签后，GitHub Actions 会在 macOS runner 上测试、构建并发布：
+GitHub Actions 将模拟器 XCTest、真机 IPA 归档和 iOS 16 兼容编译拆成独立并行任务，并分区复用 Xcode DerivedData 与 Xcode 26 编译缓存；详见[并行 CI 与缓存策略](docs/IOS_CI.md)。推送 `v*` 标签后，仅在三项验证全部成功时发布：
 
 - `StarWave-resignable.ipa`
 - `StarWave-resignable.ipa.sha256`

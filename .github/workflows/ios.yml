@@ -9,62 +9,91 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+# These three jobs deliberately have no needs relationship: simulator tests,
+# the device archive, and legacy compatibility compile use independent runners.
 jobs:
-  build:
-    name: iOS 26 SDK build, test, and IPA
+  simulator-tests:
+    name: iOS 26 simulator build and XCTest
     runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
-      - name: Restore build tool caches
-        uses: actions/cache@v6.1.0
+      - name: Prepare cached simulator build
+        id: prepare
+        uses: ./.github/actions/prepare-ios
         with:
-          path: |
-            ~/Library/Caches/Homebrew
-            ~/Library/Caches/org.swift.swiftpm
-            ~/.cache/org.swift.swiftpm
-          key: ${{ runner.os }}-xcode26.6-tools-${{ hashFiles('project.yml', '.github/workflows/ios.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode26.6-tools-
-      - name: Restore Xcode DerivedData
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/Library/Caches/StarWave/DerivedData
-          key: ${{ runner.os }}-xcode26.6-derived-${{ hashFiles('project.yml', 'StarWave/**/*.swift', 'StarWaveTests/**/*.swift') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode26.6-derived-
-      - name: Prepare reusable build directories
-        run: mkdir -p "$HOME/Library/Caches/StarWave/DerivedData"
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Generate Xcode project
-        run: xcodegen generate
-      - name: Compile app and tests
+          xcode: '26.6'
+          profile: simulator
+          source-hash: ${{ hashFiles('project.yml', 'StarWave/**', 'StarWaveTests/**', '.github/actions/**', '.github/workflows/ios.yml') }}
+      - name: Start simulator while compilation runs
+        id: simulator
+        run: |
+          set -euo pipefail
+          read -r DEVICE_ID DEVICE_STATE < <(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = [(runtime, d) for runtime, values in json.load(sys.stdin)["devices"].items()
+                     if ".iOS-" in runtime for d in values
+                     if d.get("isAvailable") and "iPhone" in d.get("name", "")]
+          if not devices:
+              sys.exit("No available iPhone simulator; refusing to skip XCTest")
+          devices.sort(key=lambda item: ("iOS-26" not in item[0], item[1].get("state") != "Booted"))
+          device = devices[0][1]
+          print(device["udid"], device["state"])
+          ')
+          echo "device-id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          if [ "$DEVICE_STATE" = "Shutdown" ]; then
+            xcrun simctl boot "$DEVICE_ID"
+          elif [ "$DEVICE_STATE" != "Booted" ] && [ "$DEVICE_STATE" != "Booting" ]; then
+            echo "::error::Unsupported simulator state: $DEVICE_STATE"
+            exit 1
+          fi
+      - name: Compile app and tests with Xcode compilation caching
         run: >-
           xcodebuild build-for-testing
           -project StarWave.xcodeproj
           -scheme StarWave
           -sdk iphonesimulator
           -destination 'generic/platform=iOS Simulator'
-          -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData"
+          -derivedDataPath "${{ steps.prepare.outputs.derived-data }}"
+          -showBuildTimingSummary
+          COMPILATION_CACHE_ENABLE_CACHING=YES
+          COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
+          COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
-      - name: Run unit tests when a simulator runtime is available
-        run: |
-          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for runtime, values in d.items() if ".iOS-" in runtime for x in values if x.get("isAvailable")), ""))')"
-          if [ -n "$DEVICE_ID" ]; then
-            xcrun simctl bootstatus "$DEVICE_ID" -b
-            xcodebuild test-without-building -project StarWave.xcodeproj -scheme StarWave -destination "platform=iOS Simulator,id=$DEVICE_ID" -parallel-testing-enabled NO -resultBundlePath "$RUNNER_TEMP/StarWaveTests.xcresult" -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData" CODE_SIGNING_ALLOWED=NO
-          else
-            echo "::warning::No iOS Simulator runtime is installed; build-for-testing completed, runtime tests skipped."
-          fi
-      - name: Export UI regression previews
+      - name: Save successful simulator compilation before running tests
+        if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ steps.prepare.outputs.cache-root }}
+          key: ${{ steps.prepare.outputs.cache-key }}
+      - name: Wait for simulator boot
+        timeout-minutes: 5
+        run: xcrun simctl bootstatus "${{ steps.simulator.outputs.device-id }}" -b
+      - name: Run XCTest without rebuilding
+        timeout-minutes: 20
+        run: >-
+          xcodebuild test-without-building
+          -project StarWave.xcodeproj
+          -scheme StarWave
+          -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.device-id }}'
+          -parallel-testing-enabled NO
+          -resultBundlePath "$RUNNER_TEMP/StarWaveTests.xcresult"
+          -derivedDataPath "${{ steps.prepare.outputs.derived-data }}"
+          COMPILATION_CACHE_ENABLE_CACHING=YES
+          COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
+          COMPILER_INDEX_STORE_ENABLE=NO
+          CODE_SIGNING_ALLOWED=NO
+      - name: Export test summary and UI regression previews
         if: always()
         run: |
           if [ -d "$RUNNER_TEMP/StarWaveTests.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/StarWaveTests.xcresult" > "$RUNNER_TEMP/StarWaveTests-summary.json"
             xcrun xcresulttool export attachments --path "$RUNNER_TEMP/StarWaveTests.xcresult" --output-path "$RUNNER_TEMP/StarWave-test-previews"
           fi
       - name: Upload UI regression previews
@@ -74,14 +103,32 @@ jobs:
           name: StarWave-test-previews
           path: ${{ runner.temp }}/StarWave-test-previews
           if-no-files-found: warn
+          retention-days: 14
       - name: Upload unit test results
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: StarWave-test-results
-          path: ${{ runner.temp }}/StarWaveTests.xcresult
+          path: |
+            ${{ runner.temp }}/StarWaveTests.xcresult
+            ${{ runner.temp }}/StarWaveTests-summary.json
           if-no-files-found: warn
-      - name: Build re-signable app
+          retention-days: 14
+
+  build:
+    name: iOS 26 device archive and IPA
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare cached device build
+        id: prepare
+        uses: ./.github/actions/prepare-ios
+        with:
+          xcode: '26.6'
+          profile: iphoneos
+          source-hash: ${{ hashFiles('project.yml', 'StarWave/**', '.github/actions/**', '.github/workflows/ios.yml') }}
+      - name: Archive re-signable app with Xcode compilation caching
         run: >-
           xcodebuild archive
           -project StarWave.xcodeproj
@@ -89,33 +136,34 @@ jobs:
           -configuration Release
           -sdk iphoneos
           -archivePath "$RUNNER_TEMP/StarWave.xcarchive"
-          -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData"
+          -derivedDataPath "${{ steps.prepare.outputs.derived-data }}"
+          -showBuildTimingSummary
+          COMPILATION_CACHE_ENABLE_CACHING=YES
+          COMPILATION_CACHE_CAS_PATH="${{ steps.prepare.outputs.compilation-cache }}"
+          COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
+      - name: Save successful device compilation
+        if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ steps.prepare.outputs.cache-root }}
+          key: ${{ steps.prepare.outputs.cache-key }}
       - name: Package IPA
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$RUNNER_TEMP/StarWave.xcarchive/Products/Applications/StarWave.app" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
           zip -qry StarWave-resignable.ipa Payload
           shasum -a 256 StarWave-resignable.ipa > StarWave-resignable.ipa.sha256
-      - name: Upload artifact
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v7.0.1
         with:
           name: StarWave-resignable
           path: |
             ${{ runner.temp }}/StarWave-resignable.ipa
             ${{ runner.temp }}/StarWave-resignable.ipa.sha256
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "$RUNNER_TEMP/StarWave-resignable.ipa" "$RUNNER_TEMP/StarWave-resignable.ipa.sha256" --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" "$RUNNER_TEMP/StarWave-resignable.ipa" "$RUNNER_TEMP/StarWave-resignable.ipa.sha256" --generate-notes
-          fi
 
   legacy-compatibility:
     name: iOS 16 compatibility compile
@@ -123,31 +171,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
-      - name: Restore build tool caches
-        uses: actions/cache@v6.1.0
+      - name: Prepare cached legacy simulator build
+        id: prepare
+        uses: ./.github/actions/prepare-ios
         with:
-          path: |
-            ~/Library/Caches/Homebrew
-            ~/Library/Caches/org.swift.swiftpm
-            ~/.cache/org.swift.swiftpm
-          key: ${{ runner.os }}-xcode16.4-tools-${{ hashFiles('project.yml', '.github/workflows/ios.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode16.4-tools-
-      - name: Restore Xcode DerivedData
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/Library/Caches/StarWave/DerivedData
-          key: ${{ runner.os }}-xcode16.4-derived-${{ hashFiles('project.yml', 'StarWave/**/*.swift', 'StarWaveTests/**/*.swift') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode16.4-derived-
-      - name: Prepare reusable build directories
-        run: mkdir -p "$HOME/Library/Caches/StarWave/DerivedData"
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Generate Xcode project
-        run: xcodegen generate
+          xcode: '16.4'
+          profile: legacy-simulator
+          source-hash: ${{ hashFiles('project.yml', 'StarWave/**', 'StarWaveTests/**', '.github/actions/**', '.github/workflows/ios.yml') }}
       - name: Compile legacy fallback and tests
         run: >-
           xcodebuild build-for-testing
@@ -155,5 +185,41 @@ jobs:
           -scheme StarWave
           -sdk iphonesimulator
           -destination 'generic/platform=iOS Simulator'
-          -derivedDataPath "$HOME/Library/Caches/StarWave/DerivedData"
+          -derivedDataPath "${{ steps.prepare.outputs.derived-data }}"
+          -showBuildTimingSummary
+          COMPILER_INDEX_STORE_ENABLE=NO
           CODE_SIGNING_ALLOWED=NO
+      - name: Save successful legacy compilation
+        if: github.ref == 'refs/heads/main' && steps.prepare.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ steps.prepare.outputs.cache-root }}
+          key: ${{ steps.prepare.outputs.cache-key }}
+
+  release:
+    name: Publish verified GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [simulator-tests, build, legacy-compatibility]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download verified IPA
+        uses: actions/download-artifact@v8.0.0
+        with:
+          name: StarWave-resignable
+          path: release-artifacts
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: release-artifacts
+        run: |
+          set -euo pipefail
+          shasum -a 256 -c StarWave-resignable.ipa.sha256
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" StarWave-resignable.ipa StarWave-resignable.ipa.sha256 --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" StarWave-resignable.ipa StarWave-resignable.ipa.sha256 --generate-notes
+          fi

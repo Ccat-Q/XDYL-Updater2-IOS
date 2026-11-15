@@ -1,0 +1,111 @@
+name: Prepare cached Xcode build
+description: Select an exact toolchain, generate the project, and restore isolated Xcode caches.
+inputs:
+  xcode:
+    description: Installed Xcode version, for example 26.6 or 16.4.
+    required: true
+  profile:
+    description: Isolated SDK/build profile (simulator, iphoneos, legacy-simulator).
+    required: true
+  source-hash:
+    description: Hash of all source and configuration inputs for this profile.
+    required: true
+outputs:
+  derived-data:
+    description: Profile-specific DerivedData directory.
+    value: ${{ steps.paths.outputs.derived-data }}
+  compilation-cache:
+    description: Profile-specific content-addressable compilation cache.
+    value: ${{ steps.paths.outputs.compilation-cache }}
+  cache-root:
+    description: Directory to save after a successful compile.
+    value: ${{ steps.paths.outputs.cache-root }}
+  cache-key:
+    description: Exact primary cache key for this toolchain and input hash.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  cache-hit:
+    description: Whether the exact primary cache was restored.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Select and fingerprint Xcode
+      id: toolchain
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode }}
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        [[ "$XCODE_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]
+        case "$CACHE_PROFILE" in simulator|iphoneos|legacy-simulator) ;; *) exit 1 ;; esac
+        sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+        FINGERPRINT="$( { xcodebuild -version; xcrun swift --version; sw_vers -buildVersion; uname -m; } | shasum -a 256 | awk '{print $1}')"
+        echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+        xcodebuild -version
+    - name: Restore build-tool download cache
+      id: tools
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: |
+          ~/Library/Caches/Homebrew
+          ~/Library/Caches/org.swift.swiftpm
+          ~/.cache/org.swift.swiftpm
+        key: ${{ runner.os }}-${{ runner.arch }}-ios-tools-v2-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('.github/actions/prepare-ios/action.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-ios-tools-v2-${{ steps.toolchain.outputs.fingerprint }}-
+    - name: Install XcodeGen without a Homebrew update
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+      run: |
+        set -euo pipefail
+        if ! brew list --versions xcodegen >/dev/null 2>&1; then
+          brew install xcodegen
+        fi
+        xcodegen --version
+    - name: Save build-tool download cache
+      if: github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: |
+          ~/Library/Caches/Homebrew
+          ~/Library/Caches/org.swift.swiftpm
+          ~/.cache/org.swift.swiftpm
+        key: ${{ steps.tools.outputs.cache-primary-key }}
+    - name: Prepare isolated build directories
+      id: paths
+      shell: bash
+      env:
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        ROOT="$HOME/Library/Caches/StarWave/$CACHE_PROFILE"
+        mkdir -p "$ROOT/DerivedData" "$ROOT/CompilationCache.noindex"
+        echo "cache-root=$ROOT" >> "$GITHUB_OUTPUT"
+        echo "derived-data=$ROOT/DerivedData" >> "$GITHUB_OUTPUT"
+        echo "compilation-cache=$ROOT/CompilationCache.noindex" >> "$GITHUB_OUTPUT"
+    - name: Generate Xcode project
+      shell: bash
+      run: xcodegen generate
+    - name: Restore Xcode build and compilation caches
+      id: restore
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.cache-root }}
+        key: ${{ runner.os }}-${{ runner.arch }}-xcode-cache-v2-${{ steps.toolchain.outputs.fingerprint }}-${{ inputs.profile }}-${{ inputs.source-hash }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-xcode-cache-v2-${{ steps.toolchain.outputs.fingerprint }}-${{ inputs.profile }}-
+    - name: Report cache selection
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        EXACT_HIT: ${{ steps.restore.outputs.cache-hit }}
+        MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+      run: |
+        {
+          echo "### Xcode cache: $PROFILE"
+          echo "- Exact source/toolchain cache hit: ${EXACT_HIT:-false}"
+          echo "- Restored key: ${MATCHED_KEY:-none (cold build)}"
+          echo "- Cache writes: successful compilation on main only"
+        } >> "$GITHUB_STEP_SUMMARY"
