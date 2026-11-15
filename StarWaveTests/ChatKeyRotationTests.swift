@@ -62,7 +62,8 @@ private struct RotationFixture {
         let keys = RotationKeyStore(); vault = keys
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RotationProtocol.self]
         chat = ChatController(sessionStore: session, mainAPI: APIClient(sessionStore: session, session: URLSession(configuration: config)),
-                              defaults: UserDefaults(suiteName: UUID().uuidString)!, keyVaultFactory: { _ in keys })
+                              defaults: UserDefaults(suiteName: UUID().uuidString)!, keyVaultFactory: { _ in keys },
+                              transportFactory: { ChatTransport(relay: $0, configuration: config) })
         try chat.changeRelay("https://" + UUID().uuidString.lowercased() + ".test", profile: UserProfile(json: .object(["id": .number(1), "username": .string("alice")])))
         chat.setEnabled(true); chat.foreground = true
         var ring = try ChatKeyRing.create(); ring.revision = "1"; try keys.save(ring)
