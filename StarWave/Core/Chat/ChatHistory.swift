@@ -74,11 +74,19 @@ extension ChatController {
     func requireHistory(_ feature: String) throws {
         guard features.contains(feature) else { throw ChatFailure.service(503, "HISTORY_NOT_CONFIGURED", nil) }
     }
-    func historyFilters() async throws -> (String, [JSONValue]) {
+    func historyFilters(connection c: ChatConnection? = nil) async throws -> (String, [JSONValue]) {
         var cursor: String?, revision: String?, filters: [JSONValue] = []
         repeat {
             var q = [URLQueryItem(name: "limit", value: "500")]; if let cursor { q.append(URLQueryItem(name: "cursor", value: cursor)) }
-            let result = try await json("/chat/v2/history/filters", query: q), nextRevision = try result.chatSequence("revision")
+            let result: JSONValue
+            if let c {
+                // A caller holding the local-write lock must not renew through
+                // connect(), which needs that same lock for key reconciliation.
+                try current(c)
+                let response = try await c.transport.json("/chat/v2/history/filters", token: c.token, query: q)
+                try current(c); result = response["data"] ?? response
+            } else { result = try await json("/chat/v2/history/filters", query: q) }
+            let nextRevision = try result.chatSequence("revision")
             if let revision, revision != nextRevision { throw ChatFailure.service(409, "FILTER_CHANGED", nil) }
             revision = nextRevision; filters += try result["filters"].chatArray()
             cursor = result["has_more"]?.boolValue == true ? try result.chatString("next_cursor") : nil
@@ -92,10 +100,20 @@ extension ChatController {
         return try await prepareHistory(c, id: UUID().uuidString.lowercased(), kind: "backup", root: root)
     }
     private func prepareHistory(_ c: ChatConnection, id: String, kind: String, root: String, sourcePublicKey: String? = nil, proof: String? = nil) async throws -> ChatPreparedPack {
-        let filters = try await historyFilters()
-        let history = try await c.store.all(ChatMessage.self, kind: "message").filter { ChatHistoryFilter.allows($0, filters: filters.1) }
-        let archive = ChatHistoryArchive(format: "nu-chat-records/1", owner: c.subject, relay: c.transport.relay.absoluteString, messages: history,
-                                         peers: peers, privateKeys: c.ring.keys + c.ring.archiveKeys)
+        let archive = try await localWrite(c) {
+            // Snapshot history and its decrypting keys atomically with respect
+            // to rotation/import. Never back up a stale pre-rotation connection
+            // while a published candidate is still awaiting reconciliation.
+            let filters = try await historyFilters(connection: c)
+            guard let ring = try keyVaultFactory(c.namespace).load(), ring.deviceID == c.ring.deviceID,
+                  ring.revision == c.ring.revision, ring.pendingRotation == nil else {
+                throw ChatFailure.invalid("密钥正在轮换，请重新连接完成核对后再备份或迁移。")
+            }
+            let history = try await c.store.all(ChatMessage.self, kind: "message").filter { ChatHistoryFilter.allows($0, filters: filters.1) }
+            try current(c)
+            return ChatHistoryArchive(format: "nu-chat-records/1", owner: c.subject, relay: c.transport.relay.absoluteString, messages: history,
+                                      peers: peers, privateKeys: ring.keys + ring.archiveKeys)
+        }
         let data = try JSONEncoder().encode(archive)
         guard data.count < 100 * 1048576 - 4096 else { throw ChatFailure.invalid("历史超过本客户端单包 100 MiB 限制，请先清理或分批保留历史。") }
         let salt = try ChatCrypto.random(32), key = try ChatHistoryCrypto.cipher(root: root, salt: salt, owner: c.subject, pack: id, kind: kind)
@@ -107,7 +125,7 @@ extension ChatController {
             try current(c); try await c.store.put(chunk, kind: "historyChunk", id: id + ":\(index)")
             digests.append(ChatCrypto.digest(chunk)); byteCount += chunk.count
         }
-        let manifest = JSONValue.object(["format": .string("nu-chat-records/1"), "records": .number(Double(history.count)),
+        let manifest = JSONValue.object(["format": .string("nu-chat-records/1"), "records": .number(Double(archive.messages.count)),
             "chunks": .array(digests.enumerated().map { .object(["index": .number(Double($0.offset)), "digest": .string($0.element)]) })])
         let sealed = try ChatHistoryCrypto.seal(ChatCrypto.canonical(manifest), key: key, aad: ChatHistoryCrypto.aad(owner: c.subject, pack: id, kind: kind, index: nil))
         let wrapper = JSONValue.chatObject(["format": "nu-chat-history/1", "salt": salt.base64EncodedString(), "sealed_manifest": sealed.base64EncodedString()])
@@ -219,7 +237,7 @@ extension ChatController {
         try await localWrite(c) {
         // Stage in memory until BOTH reads succeed. No partial history can be
         // left behind if the final filter fetch fails.
-        let latest = try await historyFilters(); try current(c)
+        let latest = try await historyFilters(connection: c); try current(c)
         let vault = keyVaultFactory(c.namespace)
         guard let currentRing = try vault.load(), currentRing.deviceID == c.ring.deviceID else { throw CancellationError() }
         let ring = try currentRing.mergingHistory(archive.privateKeys)
@@ -232,8 +250,9 @@ extension ChatController {
         }
         try current(c); messages = try await c.store.all(ChatMessage.self, kind: "message")
         if kind == "transfer" {
-            _ = try await json(base + "/ack", method: "POST", body: .chatObject(["expected_revision": try pack.chatSequence("revision"), "filter_revision": latest.0]))
-            try await c.store.remove(kind: "transferTarget", id: id)
+            try current(c)
+            _ = try await c.transport.json(base + "/ack", token: c.token, method: "POST", body: .chatObject(["expected_revision": try pack.chatSequence("revision"), "filter_revision": latest.0]))
+            try current(c); try await c.store.remove(kind: "transferTarget", id: id)
         }
         }
         // No send, sync cursor reset, unread increment, or message receipt here.

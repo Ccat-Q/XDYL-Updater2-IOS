@@ -198,9 +198,104 @@ extension ChatController {
         }
         return result["has_more"]?.boolValue == true ? result["next_before"]?.stringValue : nil
     }
+    /// Caller must hold localOnlyWrite/localWrite; never calls connect recursively.
+    /// Reloading inside the lock preserves concurrent history imports and rotation intent.
+    func reconcileDeviceKeys(ring snapshot: ChatKeyRing, transport: ChatTransport, token: String,
+                             username: String, namespace: String, valid: () throws -> Void) async throws -> ChatKeyRing {
+        try valid()
+        let vault = keyVaultFactory(namespace)
+        guard var ring = try vault.load(), ring.deviceID == snapshot.deviceID,
+              ring.storeKey == snapshot.storeKey else { throw CancellationError() }
+        let own = try ChatKeyBundle(try await transport.json("/chat/v2/users/\(ChatValidation.segment(username))/keys", token: token)["data"] ?? .null)
+        try valid()
+        guard own.subject == subject else { throw ChatFailure.invalid("The relay key bundle belongs to another account.") }
+        let device = own.devices.first { $0.id == ring.deviceID }
+        if let pending = ring.pendingRotation {
+            let next = try pending.nextRevision
+            // Validate the candidate before any publication, including on recovery.
+            let completed = try ring.completingRotation(revision: next)
+            if let device, device.revision == next, Set(device.keys) == Set(pending.keys.map(\.published)) {
+                ring = completed
+            } else {
+                guard let device, device.revision == pending.expectedRevision,
+                      Set(device.keys) == Set(ring.keys.map(\.published)) else {
+                    throw ChatFailure.invalid("云端设备公钥与已保存的轮换状态不符，未丢弃任何本机密钥。")
+                }
+                let state = try await transport.json("/chat/v2/devices/\(ring.deviceID)/legacy", token: token)["data"] ?? .null
+                try valid(); try ChatKeyRing.requireRotationAllowed(state, deviceID: ring.deviceID)
+                // Replay the exact durable candidate; do not generate replacement keys after a timeout.
+                let accepted = try await transport.json("/chat/v2/devices/\(ring.deviceID)/keys", token: token, method: "POST", body: pending.request)["data"] ?? .null
+                try valid()
+                guard try accepted.chatString("device_id") == ring.deviceID,
+                      try accepted.chatSequence("key_revision") == next else { throw ChatFailure.invalid("轮换响应与本机候选版本不符。") }
+                // Idempotent CAS may replay a historical success; confirm the
+                // currently published keys before discarding durable intent.
+                let confirmed = try ChatKeyBundle(try await transport.json("/chat/v2/users/\(ChatValidation.segment(username))/keys", token: token)["data"] ?? .null)
+                try valid()
+                guard confirmed.subject == own.subject,
+                      let current = confirmed.devices.first(where: { $0.id == ring.deviceID }),
+                      current.revision == next, Set(current.keys) == Set(pending.keys.map(\.published)) else {
+                    throw ChatFailure.invalid("轮换结果与云端当前公钥不符，已保留候选密钥，请核对设备后重试。")
+                }
+                ring = completed
+            }
+        } else if let device {
+            guard Set(device.keys) == Set(ring.keys.map(\.published)),
+                  ring.revision == "0" || ring.revision == device.revision else {
+                throw ChatFailure.invalid("The relay device keys do not match this keyring. No keys were overwritten.")
+            }
+            ring.revision = device.revision
+        } else {
+            guard ring.revision == "0" else { throw ChatFailure.invalid("The registered device is missing from the relay. Check its revocation status.") }
+            let registered = try await transport.json("/chat/v2/devices/\(ring.deviceID)/keys", token: token, method: "POST", body: .object(["expected_revision": .string("0"), "keys": .array(ring.keys.map { $0.published.json })]))["data"] ?? .null
+            try valid()
+            guard try registered.chatString("device_id") == ring.deviceID,
+                  try registered.chatSequence("key_revision") == "1" else { throw ChatFailure.invalid("Unexpected device key registration response.") }
+            let confirmed = try ChatKeyBundle(try await transport.json("/chat/v2/users/\(ChatValidation.segment(username))/keys", token: token)["data"] ?? .null)
+            try valid()
+            guard confirmed.subject == own.subject,
+                  let current = confirmed.devices.first(where: { $0.id == ring.deviceID }),
+                  current.revision == "1", Set(current.keys) == Set(ring.keys.map(\.published)) else {
+                throw ChatFailure.invalid("登记结果与云端当前公钥不符，未覆盖本机密钥。")
+            }
+            ring.revision = "1"
+        }
+        try valid(); try vault.save(ring)
+        return ring
+    }
+
+    func rotateDeviceKeys() async throws {
+        let c = try await connect()
+        try await localWrite(c) {
+            let vault = keyVaultFactory(c.namespace)
+            guard let latest = try vault.load(), latest.deviceID == c.ring.deviceID,
+                  latest.revision == c.ring.revision else { throw CancellationError() }
+            let state = try await c.transport.json("/chat/v2/devices/\(latest.deviceID)/legacy", token: c.token)["data"] ?? .null
+            try current(c); try ChatKeyRing.requireRotationAllowed(state, deviceID: latest.deviceID)
+            let staged = try latest.stagingRotation()
+            try vault.save(staged) // The candidate must survive a crash before the first POST.
+            defer {
+                // Captured pre-rotation connections must not encrypt or restore with a stale ring.
+                if connection?.transport === c.transport {
+                    c.transport.cancel(); connection = nil; connected = false
+                }
+            }
+            _ = try await reconcileDeviceKeys(ring: staged, transport: c.transport, token: c.token,
+                                              username: c.username, namespace: c.namespace, valid: { try self.current(c) })
+        }
+    }
+
     func enableLegacy() async throws {
-        let c = try await connect(), state = try await json("/chat/v2/devices/\(c.ring.deviceID)/legacy")
-        _ = try await json("/chat/v2/devices/\(c.ring.deviceID)/legacy", method: "POST", body: .chatObject(["expected_revision": state["revision"]?.stringValue ?? "0", "key_revision": c.ring.revision]))
+        let c = try await connect()
+        try await localWrite(c) {
+            guard let ring = try keyVaultFactory(c.namespace).load(), ring.pendingRotation == nil,
+                  ring.revision == c.ring.revision else { throw ChatFailure.invalid("请重新连接并完成密钥核对后，再启用旧协议兼容。") }
+            let path = "/chat/v2/devices/\(c.ring.deviceID)/legacy"
+            let state = try await c.transport.json(path, token: c.token)["data"] ?? .null
+            try current(c)
+            _ = try await c.transport.json(path, token: c.token, method: "POST", body: .chatObject(["expected_revision": try state.chatSequence("revision"), "key_revision": ring.revision]))
+            try current(c)
+        }
     }
     func revokeDevice(_ id: String) async throws {
         let c = try await connect(); _ = try await json("/chat/v2/devices/\(id)", method: "DELETE")
@@ -208,13 +303,14 @@ extension ChatController {
     }
     func createNewDevice() async throws {
         guard let ns = namespace else { return }
-        let stamp = ticket
-        let vault = keyVaultFactory(ns); var ring = try vault.load() ?? ChatKeyRing.create()
-        ring.archiveKeys += ring.keys; ring.keys = try ChatCrypto.newKeys(); ring.deviceID = UUID().uuidString.lowercased(); ring.revision = "0"
-        let store = try ChatLocalStore(namespace: ns, key: ring.storeKey)
-        try await store.remove(kind: "state", id: "cursor")
-        guard ticket == stamp, namespace == ns else { throw CancellationError() }
-        try vault.save(ring); suspend(); currentDeviceID = ring.deviceID; lifecycleRevision = UUID()
+        try await localOnlyWrite { store, valid in
+            let vault = keyVaultFactory(ns); var ring = try vault.load() ?? ChatKeyRing.create()
+            guard ring.pendingRotation == nil else { throw ChatFailure.invalid("请重新连接完成待定的密钥轮换核对后，再创建新设备。") }
+            ring.archiveKeys += ring.keys; ring.keys = try ChatCrypto.newKeys(); ring.deviceID = UUID().uuidString.lowercased(); ring.revision = "0"
+            try await store.remove(kind: "state", id: "cursor")
+            try valid(); try vault.save(ring)
+            suspend(); currentDeviceID = ring.deviceID; lifecycleRevision = UUID()
+        }
     }
     func clearLocal() async throws {
         _ = try localStorage() // Resolve the exact account before invalidating IO.

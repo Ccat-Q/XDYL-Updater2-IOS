@@ -119,6 +119,8 @@ private struct ChatDevicesView: View {
     @State private var revokeID: String?
     @State private var confirmNew = false
     @State private var confirmLegacy = false
+    @State private var confirmRotation = false
+    @State private var rotating = false
     var body: some View {
         List {
             ChatStatusSection()
@@ -137,12 +139,20 @@ private struct ChatDevicesView: View {
                 Text("只展示公钥指纹，不展示或复制私钥。请通过带外方式核对联系人的设备集合指纹。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("密钥轮换（V2）") {
+                Button(rotating ? "正在轮换…" : "轮换本机密钥") { confirmRotation = true }
+                    .disabled(rotating || chat.busy || !chat.connected)
+                Text("保留设备身份、旧私钥和本地历史，仅更换今后使用的 V2 密钥。联系人需要重新核对指纹；这不等于前向保密。建议先保存加密备份。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("旧协议 V1 兼容主设备暂不支持轮换，以免破坏旧安卓收发。结果不确定时保留同一组候选密钥，重新连接后继续核对，不会反复生成新钥。")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             Section("本账号设备集合指纹") {
                 Text(accountFingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 Text("让联系人与其查询页面展示的集合指纹核对；设备增减或公钥变化会改变此值。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("旧安卓互通") {
+            Section("旧协议 V1 兼容") {
                 Text(compatibility).font(.footnote)
                 Button("将本机明确设为兼容主设备") { confirmLegacy = true }
                 Text("旧协议消息只提供给此持钥主设备。已有另一旧安卓私钥或主设备时，服务端会拒绝覆盖。不同曲线的两个旧安卓仍不能直接互聊。")
@@ -155,7 +165,20 @@ private struct ChatDevicesView: View {
             }
         }
         .navigationTitle("聊天设备")
+        .disabled(rotating)
         .task { await load() }
+        .alert("轮换本机 V2 密钥？", isPresented: $confirmRotation) {
+            Button("取消", role: .cancel) {}
+            Button("保留旧钥并轮换") {
+                rotating = true
+                Task {
+                    defer { rotating = false }
+                    await chat.perform { try await chat.rotateDeviceKeys(); await load() }
+                }
+            }
+        } message: {
+            Text("旧私钥继续保存在本机，用于解密历史和处理原始待发；不会清空历史或创建新设备。轮换后请让联系人重新核对指纹，并重新制作备份。旧协议兼容主设备会被安全拒绝，不会覆盖旧协议公钥。")
+        }
         .alert("撤销此聊天设备？", isPresented: Binding(get: { revokeID != nil }, set: { if !$0 { revokeID = nil } })) {
             Button("取消", role: .cancel) { revokeID = nil }
             Button("撤销", role: .destructive) { if let id = revokeID { Task { await chat.perform { try await chat.revokeDevice(id); await load() } } }; revokeID = nil }

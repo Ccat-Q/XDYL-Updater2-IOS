@@ -4,9 +4,11 @@ import Foundation
 /// Main credentials are accepted only by the explicit session exchange call.
 final class ChatTransport: NSObject, URLSessionTaskDelegate {
     let relay: URL
+    private let route: ChatRelayRoute
     private var session: URLSession!
-    init(relay: URL, configuration: URLSessionConfiguration = .ephemeral) {
+    init(relay: URL, configuration: URLSessionConfiguration = .ephemeral, route: ChatRelayRoute = .automatic) {
         self.relay = relay
+        self.route = route
         super.init()
         configuration.urlCache = nil; configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
@@ -19,10 +21,10 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 
     func json(_ path: String, token: String? = nil, method: String = "GET", body: JSONValue? = nil,
-              query: [URLQueryItem] = [], mainCredential: Bool = false) async throws -> JSONValue {
+              query: [URLQueryItem] = [], mainCredential: Bool = false, timeout: TimeInterval? = nil) async throws -> JSONValue {
         let bytes = try body.map { try JSONEncoder().encode($0) }
         if let bytes, bytes.count > 524288 { throw ChatFailure.invalid("聊天请求超过大小限制。") }
-        let result = try await request(path, token: token, method: method, bytes: bytes, contentType: "application/json", query: query, mainCredential: mainCredential)
+        let result = try await request(path, token: token, method: method, bytes: bytes, contentType: "application/json", query: query, mainCredential: mainCredential, timeout: timeout)
         guard let value = try? JSONDecoder().decode(JSONValue.self, from: result.0), value["ok"]?.boolValue == true else { throw ChatFailure.invalid("聊天中继未返回有效成功响应。") }
         return value
     }
@@ -36,14 +38,21 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
         return result.0
     }
     private func request(_ path: String, token: String?, method: String, bytes: Data?, contentType: String,
-                         query: [URLQueryItem] = [], mainCredential: Bool = false, digest: String? = nil) async throws -> (Data, HTTPURLResponse) {
-        guard path.hasPrefix("/chat/v2/"), !path.contains("?"), !path.contains("#"),
-              !mainCredential || (path == "/chat/v2/session" && method == "POST"),
-              !query.contains(where: { $0.name.lowercased().contains("token") }),
-              var c = URLComponents(string: relay.absoluteString + path) else { throw ChatFailure.invalid("拒绝将凭据发往无效聊天接口。") }
+                         query: [URLQueryItem] = [], mainCredential: Bool = false, digest: String? = nil,
+                         timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
+        guard !mainCredential || (path == "/chat/v2/session" && method == "POST" && query.isEmpty),
+              !query.contains(where: { $0.name.lowercased().contains("token") }) else {
+            throw ChatFailure.invalid("Main credentials may only be sent to the session endpoint.")
+        }
+        if let timeout, !timeout.isFinite || timeout <= 0 || timeout > 40 {
+            throw ChatFailure.invalid("Chat request timeout must be greater than zero and at most 40 seconds.")
+        }
+        let endpoint = try route.url(relay: relay, path: path)
+        guard var c = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { throw ChatFailure.invalid("Invalid chat endpoint.") }
         c.queryItems = query.isEmpty ? nil : query
-        guard let url = c.url, url.host == relay.host, url.scheme == "https", url.port == relay.port else { throw ChatFailure.invalid("聊天请求不得跨源。") }
+        guard let url = c.url else { throw ChatFailure.invalid("Invalid chat endpoint query.") }
         var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = bytes
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         if bytes != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -54,7 +63,10 @@ final class ChatTransport: NSObject, URLSessionTaskDelegate {
         catch is CancellationError { throw CancellationError() }
         catch { throw ChatFailure.invalid("聊天网络连接失败。原发送请求已保留，可稍后原样重试。") }
         try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, http.url?.host == relay.host, http.url?.scheme == "https", data.count <= 8 * 1048576 else { throw ChatFailure.invalid("聊天响应来源或大小无效。") }
+        guard let http = response as? HTTPURLResponse, let responseURL = http.url,
+              responseURL.host == url.host, responseURL.scheme == "https", responseURL.port == url.port,
+              responseURL.user == nil, responseURL.password == nil, responseURL.path == url.path,
+              data.count <= 8 * 1048576 else { throw ChatFailure.invalid("The chat response origin, endpoint or size is invalid.") }
         guard http.statusCode == 200 else {
             let value = try? JSONDecoder().decode(JSONValue.self, from: data)
             let code = value?["error"]?["code"]?.stringValue ?? "HTTP_\(http.statusCode)"

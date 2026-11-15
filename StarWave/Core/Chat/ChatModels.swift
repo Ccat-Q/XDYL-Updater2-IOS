@@ -39,7 +39,7 @@ enum ChatFailure: LocalizedError, Equatable {
 enum ChatProtocolMode: String, Codable, CaseIterable, Identifiable {
     case automatic, native, legacy
     var id: String { rawValue }
-    var title: String { switch self { case .automatic: return "自动（优先 V2）"; case .native: return "新版 V2"; case .legacy: return "旧安卓兼容" } }
+    var title: String { switch self { case .automatic: return "自动（优先 V2）"; case .native: return "新版 V2"; case .legacy: return "V1（旧协议 · 安卓兼容）" } }
 }
 
 struct ChatPeer: Codable, Hashable, Identifiable {
@@ -215,6 +215,44 @@ extension JSONValue {
 extension Optional where Wrapped == JSONValue {
     func chatArray() throws -> [JSONValue] {
         guard case .array(let result)? = self else { throw ChatFailure.invalid("聊天响应列表无效。") }; return result
+    }
+}
+
+/// Transport routing is deliberately separate from the origin used for account
+/// namespaces, trust pins and encrypted storage. Custom relays keep root routes
+/// unless their deployment explicitly opts into the iOS entry prefix.
+enum ChatRelayRoute {
+    case automatic, root, ios
+
+    func url(relay: URL, path: String) throws -> URL {
+        guard var components = URLComponents(url: relay, resolvingAgainstBaseURL: false),
+              ["", "/", "/iOS", "/iOS/"].contains(components.percentEncodedPath),
+              components.query == nil, components.fragment == nil else {
+            throw ChatFailure.invalid("The chat relay must be an HTTPS origin or use the canonical /iOS prefix.")
+        }
+        let hasIOSPrefix = components.percentEncodedPath == "/iOS" || components.percentEncodedPath == "/iOS/"
+        components.path = ""
+        guard let originText = components.string else { throw ChatFailure.invalid("Invalid chat relay origin.") }
+        let origin = try ChatValidation.relay(originText)
+        guard path.hasPrefix("/chat/v2/"), !path.contains("?"), !path.contains("#"),
+              path.unicodeScalars.allSatisfy({ $0.isASCII && CharacterSet.urlPathAllowed.union(CharacterSet(charactersIn: "%")).contains($0) }),
+              path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().allSatisfy({ segment in
+                  guard let decoded = String(segment).removingPercentEncoding else { return false }
+                  return !decoded.isEmpty && decoded != "." && decoded != ".."
+                      && !decoded.contains("/") && !decoded.contains("\\")
+                      && decoded.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
+              }), var target = URLComponents(url: origin, resolvingAgainstBaseURL: false) else {
+            throw ChatFailure.invalid("Chat requests must stay inside the V2 API.")
+        }
+        let prefix: String
+        switch self {
+        case .automatic: prefix = hasIOSPrefix || origin.host == URL(string: ChatValidation.defaultRelay)?.host ? "/iOS" : ""
+        case .root: prefix = ""
+        case .ios: prefix = "/iOS"
+        }
+        target.percentEncodedPath = prefix + path
+        guard let url = target.url else { throw ChatFailure.invalid("Invalid chat endpoint.") }
+        return url
     }
 }
 

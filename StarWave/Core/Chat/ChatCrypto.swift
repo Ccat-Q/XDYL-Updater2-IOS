@@ -9,12 +9,67 @@ struct ChatPrivateKey: Codable {
     let publicKey: String
     var published: ChatPublicKey { ChatPublicKey(keyID: keyID, algorithm: algorithm, publicKey: publicKey) }
 }
+struct ChatPendingKeyRotation: Codable {
+    let expectedRevision: String
+    let keys: [ChatPrivateKey]
+    var request: JSONValue {
+        .object(["expected_revision": .string(expectedRevision), "keys": .array(keys.map { $0.published.json })])
+    }
+    var nextRevision: String {
+        get throws {
+            guard let value = Int64(expectedRevision), value > 0, value < Int64.max,
+                  String(value) == expectedRevision else { throw ChatFailure.invalid("Invalid device key rotation revision.") }
+            return String(value + 1)
+        }
+    }
+}
+
 struct ChatKeyRing: Codable {
     var deviceID: String
     var revision: String
     var keys: [ChatPrivateKey]
     var archiveKeys: [ChatPrivateKey]
     var storeKey: Data
+    // Optional for compatibility with keyrings saved before durable rotation.
+    var pendingRotation: ChatPendingKeyRotation? = nil
+
+    func stagingRotation() throws -> ChatKeyRing {
+        guard pendingRotation == nil else { throw ChatFailure.invalid("上次密钥轮换尚未完成核对，请重新连接后再操作。") }
+        let pending = ChatPendingKeyRotation(expectedRevision: revision, keys: try ChatCrypto.newKeys())
+        _ = try pending.nextRevision
+        var staged = self; staged.pendingRotation = pending
+        return staged
+    }
+    func completingRotation(revision acceptedRevision: String) throws -> ChatKeyRing {
+        guard let pending = pendingRotation, pending.expectedRevision == revision,
+              try pending.nextRevision == acceptedRevision else { throw ChatFailure.invalid("The device key rotation revision does not match the saved candidate.") }
+        // Validate imported/candidate keys with the same private/public checks as restore.
+        _ = try mergingHistory(pending.keys)
+        guard pending.keys.count == 2, Set(pending.keys.map(\.algorithm)) == Set(["X25519", "P256"]),
+              Set(pending.keys.map(\.keyID)).count == 2,
+              Set(pending.keys.map(\.keyID)).isDisjoint(with: Set((keys + archiveKeys).map(\.keyID))) else {
+            throw ChatFailure.invalid("The saved device key rotation candidate is invalid.")
+        }
+        var completed = self; completed.keys = pending.keys; completed.pendingRotation = nil
+        completed = try completed.mergingHistory(keys)
+        completed.revision = acceptedRevision
+        return completed
+    }
+    static func requireRotationAllowed(_ legacyState: JSONValue, deviceID: String) throws {
+        // The keys endpoint does not rebind the legacy users/public key identity.
+        guard legacyState["device_id"]?.stringValue != deviceID else {
+            throw ChatFailure.invalid("旧协议 V1 兼容主设备暂不支持轮换；已保留原有密钥和兼容身份，避免破坏旧安卓收发。")
+        }
+        guard let enabled = legacyState["enabled"]?.boolValue else { throw ChatFailure.invalid("无法核验旧协议兼容主设备，已停止轮换。") }
+        switch legacyState["device_id"] {
+        case .some(.null):
+            guard !enabled else { throw ChatFailure.invalid("The relay returned an inconsistent legacy primary device.") }
+        case .some(.string(let primary)):
+            guard !primary.isEmpty else { throw ChatFailure.invalid("无法核验旧协议兼容主设备，已停止轮换。") }
+        default:
+            throw ChatFailure.invalid("无法核验旧协议兼容主设备，已停止轮换。")
+        }
+    }
     static func create() throws -> ChatKeyRing {
         ChatKeyRing(deviceID: UUID().uuidString.lowercased(), revision: "0", keys: try ChatCrypto.newKeys(), archiveKeys: [], storeKey: try ChatCrypto.random(32))
     }
@@ -40,7 +95,7 @@ struct ChatKeyRing: Codable {
             default: throw ChatFailure.invalid("恢复私钥算法未知。")
             }
             guard imported.publicKey == pub else { throw ChatFailure.invalid("恢复私钥与公钥不匹配。") }
-            if let existing = (merged.keys + merged.archiveKeys).first(where: { $0.keyID == imported.keyID }) {
+            if let existing = (merged.keys + merged.archiveKeys + (merged.pendingRotation?.keys ?? [])).first(where: { $0.keyID == imported.keyID }) {
                 guard existing.algorithm == imported.algorithm, existing.privateData == imported.privateData, existing.publicKey == imported.publicKey else { throw ChatFailure.invalid("恢复私钥与本机冲突。") }
             } else { merged.archiveKeys.append(imported) }
         }

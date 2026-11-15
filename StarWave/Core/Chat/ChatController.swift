@@ -195,35 +195,31 @@ final class ChatController: ObservableObject {
                 try valid(); self.messages = history.filter { !$0.id.hasPrefix("pending:") || retained.contains($0.id) }
                 self.peers = contacts; self.pending = pending; self.conversations = cached
             }
-            self.currentDeviceID = ring.deviceID; self.status = "正在验证中继能力"
-            let caps = try ChatCapabilities(try await transport.json("/chat/v2/capabilities")["data"] ?? .null)
+            self.currentDeviceID = ring.deviceID; self.status = "正在核验中继 · V2"
+            // Independent reads overlap, but no main credential is sent to the
+            // relay until its v2 capabilities AND the main identity are valid.
+            // Profile refresh still uses MAIN's own transport and origin rules.
+            async let refreshedProfile = self.mainAPI.profile()
+            let caps = try ChatCapabilities(try await transport.json("/chat/v2/capabilities", timeout: 5)["data"] ?? .null)
             try valid(); self.features = caps.features
-            // Refresh against MAIN only; this call never sends the main bearer
-            // to the relay. A separate, consented session exchange does below.
-            let profile = try await self.mainAPI.profile(); try valid()
+            let profile = try await refreshedProfile; try valid()
             guard profile.stableID.map({ "account:" + $0 }) == owner, let mainToken = self.sessionStore.accessToken else { throw ChatFailure.invalid("主站身份已变化，已停止聊天认证。") }
             let session = try await transport.json("/chat/v2/session", token: mainToken, method: "POST", body: .chatObject(["device_id": ring.deviceID, "device_name": "StarWave iPhone"]), mainCredential: true)["data"] ?? .null
             try valid()
             guard try session.chatString("subject") == owner else { throw ChatFailure.invalid("中继账号与主站稳定身份不一致。") }
             let token = try session.chatString("chat_token"), name = try session.chatString("username")
-            let own = try ChatKeyBundle(try await transport.json("/chat/v2/users/\(ChatValidation.segment(name))/keys", token: token)["data"] ?? .null)
-            try valid()
-            if let device = own.devices.first(where: { $0.id == ring.deviceID }) {
-                guard Set(device.keys) == Set(ring.keys.map(\.published)) else { throw ChatFailure.invalid("云端设备密钥与本机不符，未覆盖密钥。请检查设备列表。") }
-                ring.revision = device.revision
-            } else {
-                guard ring.revision == "0" else { throw ChatFailure.invalid("云端未找到本机已登记的密钥，请检查撤销或恢复状态。") }
-                let registered = try await transport.json("/chat/v2/devices/\(ring.deviceID)/keys", token: token, method: "POST", body: .object(["expected_revision": .string("0"), "keys": .array(ring.keys.map { $0.published.json })]))["data"] ?? .null
-                try valid(); ring.revision = try registered.chatSequence("key_revision")
+            let c = try await self.localOnlyWrite { _, locallyValid in
+                try valid(); try locallyValid()
+                ring = try await self.reconcileDeviceKeys(ring: ring, transport: transport, token: token, username: name, namespace: ns, valid: {
+                    try valid(); try locallyValid()
+                })
+                try valid(); try locallyValid()
+                let c = ChatConnection(ticket: stamp, namespace: ns, subject: owner, username: name, token: token, expiresAt: try session.chatInt64("expires_at_ms"), transport: transport, store: store, ring: ring)
+                // Publish under the same lock as reconciliation. A restore or
+                // rotation must not be overwritten by a stale keyring snapshot.
+                self.connection?.transport.cancel(); self.connection = c; self.connected = true; self.username = name
+                return c
             }
-            try valid()
-            if let latest = try vault.load() {
-                guard latest.deviceID == ring.deviceID else { throw CancellationError() }
-                ring.archiveKeys = latest.archiveKeys
-            }
-            try vault.save(ring); try valid()
-            let c = ChatConnection(ticket: stamp, namespace: ns, subject: owner, username: name, token: token, expiresAt: try session.chatInt64("expires_at_ms"), transport: transport, store: store, ring: ring)
-            self.connection?.transport.cancel(); self.connection = c; self.connected = true; self.username = name
             succeeded = true; return c
         }
         connectionTask = task

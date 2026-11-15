@@ -595,6 +595,115 @@ final class ChatReviewTests: XCTestCase {
         XCTAssertNil(ChatVisibleRead.latest([unreadable], frames: frames, viewport: viewport, owner: f.c.subject, after: 0, enabled: true))
     }
 
+    @MainActor func testCapturedHistoryFilterReadDoesNotRenewExpiringConnection() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        let expiring = ChatConnection(ticket: f.c.ticket, namespace: f.c.namespace, subject: f.c.subject, username: f.c.username,
+            token: f.c.token, expiresAt: ChatController.now + 1_000, transport: f.c.transport, store: f.c.store, ring: f.c.ring)
+        f.chat.connection = expiring
+        var filterReads = 0, unexpected = 0
+        ChatReviewProtocol.handler = { request, stub in
+            if request.url!.path == "/chat/v2/history/filters" {
+                filterReads += 1
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + f.c.token)
+                stub.respond(.object(["revision": .string("1"), "filters": .array([]), "has_more": .bool(false)]))
+            } else { unexpected += 1; stub.respond(status: 503) }
+        }
+        // This overload is safe to use while holding the local-write lock:
+        // token expiration fails normally instead of recursively entering connect.
+        let result = try await f.chat.historyFilters(connection: expiring)
+        XCTAssertEqual(result.0, "1"); XCTAssertEqual(filterReads, 1); XCTAssertEqual(unexpected, 0)
+    }
+
+    @MainActor func testHistorySnapshotRejectsUnresolvedRotationCandidate() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        f.chat.features.insert("history_filters")
+        try f.chat.keyVaultFactory(f.c.namespace).save(f.c.ring.stagingRotation())
+        var filtersRead = 0
+        ChatReviewProtocol.handler = { request, stub in
+            XCTAssertEqual(request.url!.path, "/chat/v2/history/filters")
+            filtersRead += 1
+            stub.respond(.object(["revision": .string("1"), "filters": .array([]), "has_more": .bool(false)]))
+        }
+        do { _ = try await f.chat.prepareHistory(kind: "backup"); XCTFail("Unreconciled candidate cannot produce a stale backup") } catch {}
+        XCTAssertEqual(filtersRead, 1); XCTAssertNil(f.chat.preparedPack)
+        XCTAssertNotNil(try f.chat.keyVaultFactory(f.c.namespace).load()?.pendingRotation)
+    }
+
+    @MainActor func testRelayProbeOverlapsMainProfileWithoutLeakingCredentials() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        f.chat.connection = nil
+        let profileStarted = expectation(description: "Main profile starts without waiting for the relay")
+        var capabilityRequest: ChatReviewProtocol?, sawProfile = false, relayCredentials = 0
+        let unsupported = JSONValue.object(["protocol": .string("nu-chat-v1"), "version": .number(1)])
+        ChatReviewProtocol.handler = { request, stub in
+            if request.url!.path == "/chat/v2/capabilities" {
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                XCTAssertEqual(request.timeoutInterval, 5)
+                if sawProfile { stub.respond(unsupported) } else { capabilityRequest = stub }
+            } else if request.url!.path.hasSuffix("/user/profile") {
+                sawProfile = true; profileStarted.fulfill()
+                stub.respond(.object(["id": .number(1), "username": .string("alice")]))
+                capabilityRequest?.respond(unsupported); capabilityRequest = nil
+            } else {
+                relayCredentials += 1; stub.respond(status: 503)
+            }
+        }
+        let connecting = Task { try await f.chat.connect() }
+        await fulfillment(of: [profileStarted], timeout: 2)
+        // Release a sequential-regression request so a failed test cannot hang.
+        capabilityRequest?.respond(unsupported)
+        do { _ = try await connecting.value; XCTFail("A v1-only relay cannot authenticate this v2 client") } catch {}
+        XCTAssertTrue(sawProfile); XCTAssertEqual(relayCredentials, 0)
+        XCTAssertNil(f.chat.connection)
+    }
+
+    @MainActor func testChangedMainIdentityStopsBeforeRelaySessionExchange() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        f.chat.connection = nil
+        var sessions = 0
+        ChatReviewProtocol.handler = { request, stub in
+            if request.url!.path == "/chat/v2/capabilities" {
+                stub.respond(.object(["protocol": .string("nu-chat-v2"), "version": .number(2),
+                    "features": .array(["cursor_sync", "idempotent_send", "device_keys", "conversations"].map(JSONValue.string))]))
+            } else if request.url!.path.hasSuffix("/user/profile") {
+                stub.respond(.object(["id": .number(2), "username": .string("bob")]))
+            } else { sessions += 1; stub.respond(status: 503) }
+        }
+        do { _ = try await f.chat.connect(); XCTFail("A changed main identity must not authorize the relay") } catch {}
+        XCTAssertEqual(sessions, 0); XCTAssertNil(f.chat.connection)
+    }
+
+    @MainActor func testConcurrentConnectSharesVerificationAndPublishesOneTransport() async throws {
+        let f = try ChatReviewFixture(); defer { f.clean() }
+        f.chat.connection = nil
+        var paths: [String: Int] = [:]
+        ChatReviewProtocol.handler = { request, stub in
+            let path = request.url!.path; paths[path, default: 0] += 1
+            if path == "/chat/v2/capabilities" {
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                stub.respond(.object(["protocol": .string("nu-chat-v2"), "version": .number(2),
+                    "features": .array(["cursor_sync", "idempotent_send", "device_keys", "conversations"].map(JSONValue.string))]))
+            } else if path.hasSuffix("/user/profile") {
+                stub.respond(.object(["id": .number(1), "username": .string("alice")]))
+            } else if path == "/chat/v2/session" {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + (f.session.accessToken ?? ""))
+                stub.respond(.object(["subject": .string("account:1"), "username": .string("alice"),
+                    "chat_token": .string("chat-synthetic"), "expires_at_ms": .number(Double(ChatController.now + 3_600_000))]))
+            } else if path == "/chat/v2/users/alice/keys" {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer chat-synthetic")
+                stub.respond(f.bundle("account:1", device: f.c.ring.deviceID, keys: f.c.ring.keys))
+            } else { XCTFail("Unexpected request: " + path); stub.respond(status: 503) }
+        }
+        async let first = f.chat.connect()
+        async let second = f.chat.connect()
+        let (a, b) = try await (first, second)
+        XCTAssertTrue(a.transport === b.transport)
+        XCTAssertEqual(paths["/chat/v2/capabilities"], 1)
+        XCTAssertEqual(paths["/chat/v2/session"], 1)
+        XCTAssertEqual(paths["/chat/v2/users/alice/keys"], 1)
+        XCTAssertTrue(f.chat.connected)
+    }
+
     @MainActor func testSecureStoreFailureStopsBeforeRegistrationOrCredentialExchange() async throws {
         let f = try ChatReviewFixture(); defer { f.clean() }
         f.chat.connection = nil; f.chat.localStore = nil; f.vault.failSave = true
